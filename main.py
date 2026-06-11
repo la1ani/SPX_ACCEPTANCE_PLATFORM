@@ -35,8 +35,8 @@ from typing import List, Optional
 
 import pandas as pd
 
-from .config import get_settings
-from .database import (
+from config import get_settings
+from database import (
     init_db,
     insert_market_data,
     fetch_recent_market_data,
@@ -44,14 +44,17 @@ from .database import (
     insert_acceptance_result,
     insert_trade_signal,
 )
-from .agents.google_sheet_reader import GoogleSheetReader
-from .agents.zone_detection_agent import ZoneDetectionAgent, Zone
-from .agents.acceptance_rejection_agent import AcceptanceRejectionAgent, AcceptanceResult
-from .agents.peak_hold_time_agent import PeakHoldTimeAgent
-from .agents.return_to_zone_agent import ReturnToZoneAgent
-from .agents.trade_decision_agent import TradeDecisionAgent
-from .agents.telegram_agent import TelegramAgent
-
+from agents.google_sheet_reader import GoogleSheetReader
+from agents.zone_detection_agent import ZoneDetectionAgent, Zone
+from agents.acceptance_rejection_agent import AcceptanceRejectionAgent, AcceptanceResult
+from agents.peak_hold_time_agent import PeakHoldTimeAgent
+from agents.return_to_zone_agent import ReturnToZoneAgent
+from agents.trade_decision_agent import TradeDecisionAgent
+from agents.telegram_agent import TelegramAgent
+from agents.google_trade_signal_writer import (
+    GoogleTradeSignalWriter,
+    SheetSignalRow,
+)
 
 def configure_logging() -> None:
     """Configure logging to file and stdout."""
@@ -60,8 +63,10 @@ def configure_logging() -> None:
     log_file = os.path.join(log_dir, "spx_acceptance.log")
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
+
     formatter = logging.Formatter(
-        "% (asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     # File handler
     fh = logging.FileHandler(log_file)
@@ -114,6 +119,7 @@ def main() -> None:
     return_agent = ReturnToZoneAgent()
     decision_agent = TradeDecisionAgent()
     telegram_agent = TelegramAgent()
+    signal_writer = GoogleTradeSignalWriter()
     # Track the most recent timestamp seen to avoid re‑inserting data
     last_timestamp: Optional[pd.Timestamp] = None
     # Main loop
@@ -148,11 +154,45 @@ def main() -> None:
             # Step 2: fetch recent data for analysis
             recent_rows = fetch_recent_market_data(limit=300)
             if recent_rows:
-                df_recent = pd.DataFrame(recent_rows)
-                df_recent["timestamp"] = pd.to_datetime(df_recent["timestamp"])
-                df_recent["price"] = df_recent["price"].astype(float)
+                df_recent = pd.DataFrame(
+                    [dict(row) for row in recent_rows]
+                )
+
+                print("DF_RECENT COLUMNS:")
+                print(df_recent.columns.tolist())
+
+                df_recent["timestamp"] = pd.to_datetime(
+                    df_recent["timestamp"],
+                    errors="coerce"
+                )
+
+                df_recent["price"] = pd.to_numeric(
+                    df_recent["price"],
+                    errors="coerce"
+                )
+
+                df_recent = df_recent.dropna(
+                    subset=["timestamp", "price"]
+                )
+
+                df_recent = df_recent.sort_values(
+                    "timestamp"
+                )
+
+                df_recent = df_recent.reset_index(
+                    drop=True
+                )
             else:
-                df_recent = pd.DataFrame()
+                df_recent = pd.DataFrame(
+                    columns=[
+                        "id",
+                        "timestamp",
+                        "price",
+                        "signal",
+                        "call_pressure",
+                        "put_pressure",
+                    ]
+                )
             if df_recent.empty:
                 logger.info("No data available for analysis. Sleeping...")
                 time.sleep(max(0, 60 - (time.monotonic() - start_time)))
@@ -204,6 +244,21 @@ def main() -> None:
                     time_to_return=return_result.time_to_return_minutes,
                     decision=trade_result.decision,
                 )
+                signal_writer.append(
+    SheetSignalRow(
+        time=str(acceptance.entered_time),
+        price=float(df_recent.iloc[-1]["price"]),
+        zone=zone.zone_type.upper(),
+        support=f"{zone.low}-{zone.high}" if zone.zone_type == "support" else "",
+        resistance=f"{zone.low}-{zone.high}" if zone.zone_type == "resistance" else "",
+        acceptance=acceptance.decision,
+        rejection=str(acceptance.rejection_time or ""),
+        return_time=str(acceptance.returned_time or "NOT_RETURNED"),
+        decision=trade_result.decision,
+        confidence=trade_result.confidence,
+        reason=acceptance.reason,
+    )
+)
                 logger.info(
                     "Generated trade signal %d: %s (conf=%d%%)",
                     signal_id,

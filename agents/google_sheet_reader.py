@@ -18,6 +18,7 @@ import logging
 from typing import List
 
 import pandas as pd
+from pyparsing import col
 
 try:
     import gspread
@@ -26,10 +27,9 @@ try:
 except ImportError:
     HAS_GSPREAD = False
 
-from ..config import get_settings
+from config import get_settings
 
 logger = logging.getLogger(__name__)
-
 
 class GoogleSheetReader:
     """Reads price data from a Google Sheet.
@@ -40,7 +40,7 @@ class GoogleSheetReader:
     a Pandas dataframe with appropriate data types.
     """
 
-    def __init__(self, worksheet_name: str = "Sheet1") -> None:
+    def __init__(self, worksheet_name: str = "ES_PRICE") -> None:
         settings = get_settings()
         self.sheet_id = settings.google_sheet_id
         self.credentials_path = settings.google_credentials_json
@@ -94,6 +94,7 @@ class GoogleSheetReader:
         try:
             sheet = client.open_by_key(self.sheet_id)
             worksheet = sheet.worksheet(self.worksheet_name)
+            print("CONNECTED TO:", worksheet.title)
         except Exception as exc:
             logger.error("Failed to open Google Sheet: %s", exc)
             raise
@@ -109,23 +110,61 @@ class GoogleSheetReader:
         if not rows:
             return pd.DataFrame()
         header = [h.strip() for h in rows[0]]
+        print("HEADERS FOUND:", header)
         data_rows = rows[1:][-limit:]
         df = pd.DataFrame(data_rows, columns=header)
         # Ensure expected columns exist
-        for col in ["timestamp", "price"]:
-            if col not in df.columns:
+        # ES_PRICE sheet columns:
+        # Time | Ticker | Open | High | Low | Close | Volume
+
+        # Build a case-insensitive mapping of available columns
+        col_map = {c.lower(): c for c in df.columns}
+        def _find(name: str):
+            return col_map.get(name.lower())
+
+        # Required columns
+        for col in ["Time", "Close"]:
+            if not _find(col):
                 raise ValueError(f"Google Sheet must contain a '{col}' column.")
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df["price"] = pd.to_numeric(df["price"], errors="coerce")
-        # Optional columns
+
+        time_col = _find("Time")
+        close_col = _find("Close")
+
+        # Convert time and price
+        df["timestamp"] = (
+            pd.to_datetime(df[time_col], utc=True, errors="coerce")
+            .dt.tz_convert("America/Chicago")
+        )
+        df["price"] = pd.to_numeric(df[close_col], errors="coerce")
+
+        # Numeric columns commonly present in ES_PRICE
+        for num in ["Open", "High", "Low", "Volume"]:
+            act = _find(num)
+            if act:
+                df[num] = pd.to_numeric(df[act], errors="coerce")
+            else:
+                df[num] = None
+
+        # Ticker as string (preserve if present)
+        ticker_act = _find("Ticker")
+        if ticker_act:
+            df["Ticker"] = df[ticker_act].astype(str)
+        else:
+            df["Ticker"] = None
+
+        # Preserve older optional columns
         optional = ["signal", "call_pressure", "put_pressure"]
         for col in optional:
-            if col in df.columns:
+            act = _find(col)
+            if act:
                 if col in ["call_pressure", "put_pressure"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df[col] = pd.to_numeric(df[act], errors="coerce")
+                else:
+                    df[col] = df[act]
             else:
                 df[col] = None
-        # Drop rows with missing price
+
+        # Drop rows missing timestamp or price
         df = df.dropna(subset=["timestamp", "price"])
         # Sort by timestamp ascending
         df = df.sort_values("timestamp")

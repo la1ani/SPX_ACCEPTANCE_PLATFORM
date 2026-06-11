@@ -1,0 +1,20 @@
+{
+  "alignment_window_minutes": 15,
+  "bullish_alignment": {
+    "SPY": "BUY",
+    "CALL": "BUY",
+    "PUT": "SELL"
+  },
+  "bearish_alignment": {
+    "SPY": "SELL",
+    "CALL": "SELL",
+    "PUT": "BUY"
+  },
+  "speed_grades": {
+    "0_3_minutes": "A+",
+    "3_6_minutes": "A",
+    "6_10_minutes": "B",
+    "10_15_minutes": "C",
+    "over_15_minutes": "NO_TRADE"
+  }
+}

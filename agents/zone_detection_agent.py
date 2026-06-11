@@ -20,7 +20,7 @@ from typing import List, Literal
 
 import pandas as pd
 
-from ..config import get_settings
+from config import get_settings
 
 
 ZoneType = Literal["resistance", "support"]

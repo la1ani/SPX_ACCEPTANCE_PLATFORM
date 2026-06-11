@@ -16,7 +16,7 @@ from typing import Optional
 
 import pandas as pd
 
-from .zone_detection_agent import Zone
+from agents.zone_detection_agent import Zone
 
 
 logger = logging.getLogger(__name__)

@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Tuple, List, Dict, Any
 
-from ..config import get_settings
+from config import get_settings
 
 
 def _get_connection() -> sqlite3.Connection:

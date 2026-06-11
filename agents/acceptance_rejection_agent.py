@@ -18,8 +18,8 @@ from typing import Literal, Optional
 
 import pandas as pd
 
-from ..config import get_settings
-from .zone_detection_agent import Zone
+from config import get_settings
+from agents.zone_detection_agent import Zone
 
 
 Bias = Literal["CALL", "PUT", "WAIT"]

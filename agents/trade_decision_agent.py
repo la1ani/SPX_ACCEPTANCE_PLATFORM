@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from ..config import get_settings
+from config import get_settings
 from .acceptance_rejection_agent import AcceptanceResult
 from .peak_hold_time_agent import PeakHoldTimeResult
 from .return_to_zone_agent import ReturnToZoneResult

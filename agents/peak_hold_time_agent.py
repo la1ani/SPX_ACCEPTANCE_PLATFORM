@@ -24,7 +24,7 @@ from typing import Literal, Optional, Tuple
 
 import pandas as pd
 
-from ..config import get_settings
+from config import get_settings
 
 
 logger = logging.getLogger(__name__)
