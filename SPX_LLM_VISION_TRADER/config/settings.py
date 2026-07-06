@@ -75,9 +75,11 @@ class Settings:
 def load_settings(env_file: Optional[str] = None) -> Settings:
     env_path = Path(env_file) if env_file else ROOT_DIR / ".env"
     if env_path.exists():
-        load_dotenv(env_path)
+        # override=True is important on Windows because blank shell environment
+        # variables can otherwise block values saved in .env from loading.
+        load_dotenv(env_path, override=True)
     else:
-        load_dotenv()
+        load_dotenv(override=True)
     output_dir = Path(os.getenv("OUTPUT_DIR", str(ROOT_DIR / "outputs")))
     database_path = Path(os.getenv("DATABASE_PATH", str(ROOT_DIR / "outputs" / "spx_llm_vision_trader.db")))
     browser_profile_dir = Path(os.getenv("BROWSER_PROFILE_DIR", str(ROOT_DIR / "tradingview_profile")))
