@@ -1,0 +1,13 @@
+.env
+service_account.json
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+.venv/
+venv/
+outputs/screenshots/*.png
+outputs/logs/*.log
+outputs/results/*.json
+outputs/raw_llm/*
+tradingview_profile/
