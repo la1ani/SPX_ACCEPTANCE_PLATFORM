@@ -20,9 +20,15 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 if errorlevel 1 goto error
 
-echo Installing Playwright Chromium browser...
+echo Trying to install Playwright Chromium browser...
+echo If this times out, the app will continue and try your installed Chrome/Edge.
 playwright install chromium
-if errorlevel 1 goto error
+if errorlevel 1 (
+    echo.
+    echo Playwright Chromium download failed or timed out.
+    echo Continuing with installed Google Chrome / Microsoft Edge fallback.
+    echo.
+)
 
 if not exist ".env" (
     echo Creating .env from .env.example...
