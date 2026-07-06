@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from playwright.async_api import async_playwright, BrowserContext, Page, Playwright
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
 
 
 class TradingViewSession:
@@ -11,6 +11,8 @@ class TradingViewSession:
         self.profile_dir = Path(profile_dir)
         self.headless = headless
         self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        self._using_cdp = False
         self.context: BrowserContext | None = None
         self.page: Page | None = None
 
@@ -19,6 +21,21 @@ class TradingViewSession:
             raise RuntimeError("TRADINGVIEW_URL is missing in .env")
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
+
+        cdp_url = os.getenv("BROWSER_CDP_URL", "").strip()
+        if cdp_url:
+            # Best path for Google sign-in: user opens normal Chrome manually,
+            # signs into TradingView with Google, then the bot attaches to that
+            # already-open Chrome instead of launching an automation browser.
+            print(f"Connecting to existing Chrome: {cdp_url}")
+            self._using_cdp = True
+            self._browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+            self.context = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
+            pages = self.context.pages
+            self.page = next((p for p in pages if "tradingview.com" in p.url.lower()), pages[0] if pages else await self.context.new_page())
+            await self.page.goto(self.tradingview_url, wait_until="domcontentloaded", timeout=90000)
+            await self.page.wait_for_timeout(3000)
+            return self.page
 
         launch_kwargs = {
             "user_data_dir": str(self.profile_dir),
@@ -75,7 +92,9 @@ class TradingViewSession:
         return self.page
 
     async def stop(self) -> None:
-        if self.context:
+        # If attached to manually-opened Chrome via BROWSER_CDP_URL, do not close
+        # that Chrome window. Just stop Playwright control.
+        if self.context and not self._using_cdp:
             await self.context.close()
         if self._playwright:
             await self._playwright.stop()
