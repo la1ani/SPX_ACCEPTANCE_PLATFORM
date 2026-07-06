@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 def utc_now_iso() -> str:
@@ -58,6 +58,63 @@ class TriggerPlan(BaseModel):
     watch_plan: WatchPlan = Field(default_factory=WatchPlan)
     python_instructions: PythonInstructions = Field(default_factory=PythonInstructions)
     next_action: str = "WATCH"
+
+    @field_validator("call_battle_area", "put_battle_area", mode="before")
+    @classmethod
+    def _coerce_zone(cls, value: Any) -> Any:
+        if value is None or isinstance(value, str) or isinstance(value, list):
+            return Zone().model_dump()
+        return value
+
+    @field_validator("consolidation_zone", mode="before")
+    @classmethod
+    def _coerce_consolidation_zone(cls, value: Any) -> Any:
+        if value is None or isinstance(value, str) or isinstance(value, list):
+            return ConsolidationZone().model_dump()
+        return value
+
+    @field_validator("liquidity_zone", mode="before")
+    @classmethod
+    def _coerce_liquidity_zone(cls, value: Any) -> Any:
+        if value is None or isinstance(value, str) or isinstance(value, list):
+            return LiquidityZone().model_dump()
+        return value
+
+    @field_validator("rejection_zones", mode="before")
+    @classmethod
+    def _coerce_rejection_zones(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    @field_validator("watch_plan", mode="before")
+    @classmethod
+    def _coerce_watch_plan(cls, value: Any) -> Any:
+        if value is None:
+            return WatchPlan().model_dump()
+        if isinstance(value, str):
+            return {
+                "conditions_to_watch": [value],
+                "call_llm_when": ["chart becomes readable", "new screenshot available"],
+                "cancel_trigger_when": [],
+                "new_screenshot_when": ["TradingView finishes loading", "user logs in", "chart data becomes visible"],
+            }
+        if isinstance(value, list):
+            return {"conditions_to_watch": value}
+        return value
+
+    @field_validator("python_instructions", mode="before")
+    @classmethod
+    def _coerce_python_instructions(cls, value: Any) -> Any:
+        if value is None:
+            return PythonInstructions().model_dump()
+        if isinstance(value, list):
+            return {"allowed_actions": [str(v) for v in value], "not_allowed_actions": []}
+        if isinstance(value, str):
+            return {"allowed_actions": [value], "not_allowed_actions": []}
+        return value
 
 
 class FactorGrade(BaseModel):
