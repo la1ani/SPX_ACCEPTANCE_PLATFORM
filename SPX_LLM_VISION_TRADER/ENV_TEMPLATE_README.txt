@@ -1,0 +1,1 @@
+Create a file named .env using the .env.example from the downloadable zip. Required values: LLM provider, model, secret key, TradingView URL, Google Sheet ID, CALL tab, PUT tab, service account file, timing, database path, output path, alerts, strict mode.
