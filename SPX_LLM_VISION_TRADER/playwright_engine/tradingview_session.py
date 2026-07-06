@@ -24,32 +24,48 @@ class TradingViewSession:
             "user_data_dir": str(self.profile_dir),
             "headless": self.headless,
             "viewport": {"width": 1600, "height": 1000},
-            "args": ["--start-maximized"],
+            "args": [
+                "--start-maximized",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+            ],
         }
 
-        # First try Playwright's bundled Chromium. If the browser download failed
-        # because of CDN timeout, fall back to installed Chrome or Edge on Windows.
-        channel_candidates: list[str | None] = [None]
-        env_channel = os.getenv("BROWSER_CHANNEL", "").strip()
-        if env_channel:
-            channel_candidates.append(env_channel)
-        channel_candidates.extend(["chrome", "msedge"])
+        # Prefer the installed normal Google Chrome browser. Google sign-in is often
+        # blocked in Playwright's bundled "Chrome for Testing" browser. Use .env
+        # BROWSER_CHANNEL=msedge if you want Edge instead, or BROWSER_CHANNEL=chromium
+        # to force Playwright's bundled browser.
+        env_channel = os.getenv("BROWSER_CHANNEL", "chrome").strip().lower()
+        if env_channel in {"", "chrome"}:
+            channel_candidates: list[str | None] = ["chrome", "msedge", None]
+        elif env_channel in {"chromium", "bundled", "playwright"}:
+            channel_candidates = [None, "chrome", "msedge"]
+        else:
+            channel_candidates = [env_channel, "chrome", "msedge", None]
+
+        # Remove duplicates while preserving order.
+        unique_candidates: list[str | None] = []
+        for channel in channel_candidates:
+            if channel not in unique_candidates:
+                unique_candidates.append(channel)
 
         errors: list[str] = []
-        for channel in channel_candidates:
+        for channel in unique_candidates:
             try:
                 kwargs = dict(launch_kwargs)
                 if channel:
                     kwargs["channel"] = channel
                 self.context = await self._playwright.chromium.launch_persistent_context(**kwargs)
+                label = channel or "bundled chromium"
+                print(f"Browser started with: {label}")
                 break
             except Exception as exc:  # noqa: BLE001 - collect all browser fallback errors
                 label = channel or "bundled chromium"
                 errors.append(f"{label}: {exc}")
         else:
             raise RuntimeError(
-                "Could not start a browser. Either install Google Chrome / Microsoft Edge, "
-                "or run: python -m playwright install chromium\n\n"
+                "Could not start a browser. Install Google Chrome / Microsoft Edge, "
+                "or set BROWSER_CHANNEL=chromium and run: python -m playwright install chromium\n\n"
                 + "\n\n".join(errors[-3:])
             )
 
