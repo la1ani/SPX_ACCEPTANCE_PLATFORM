@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import json
 import re
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -25,8 +26,60 @@ AI_LOG_HEADERS = [
     "velocity_after_failure",
     "next_action_for_python",
     "reason",
+    "memory_update",
+    "missing_confirmations",
+    "danger_signals",
+    "why_not_full_hand",
+    "what_would_upgrade_grade",
+    "what_would_downgrade_grade",
+    "factor_grades_json",
     "trigger_type",
     "cycle",
+    "screenshot_path",
+]
+
+ALERT_LOG_HEADERS = [
+    "timestamp",
+    "event_type",
+    "alert_level",
+    "battle_status",
+    "decision",
+    "winner",
+    "trade_grade",
+    "confidence",
+    "reason",
+    "next_action",
+    "telegram_mode",
+    "alert_text",
+]
+
+WATCH_LOG_HEADERS = [
+    "timestamp",
+    "watch_action",
+    "trigger_type",
+    "reason",
+    "call_rows_count",
+    "put_rows_count",
+    "commentary",
+]
+
+AUTO_CHECK_HEADERS = [
+    "timestamp",
+    "event_type",
+    "cycle",
+    "battle_status",
+    "decision",
+    "overall_grade",
+    "trade_grade",
+    "grade_confidence",
+    "grade_direction",
+    "missing_confirmations",
+    "danger_signals",
+    "why_not_full_hand",
+    "what_would_upgrade_grade",
+    "what_would_downgrade_grade",
+    "memory_update",
+    "reason",
     "screenshot_path",
 ]
 
@@ -134,9 +187,22 @@ class GoogleSheetReader:
         except Exception:
             worksheet = self.sheet.add_worksheet(title=tab_name, rows=rows, cols=max(20, len(headers)))
         current_headers = worksheet.row_values(1)
-        if not current_headers:
-            worksheet.append_row(headers, value_input_option="USER_ENTERED")
+        if current_headers != headers:
+            worksheet.update("A1", [headers], value_input_option="USER_ENTERED")
         return worksheet
+
+    def _json_text(self, value: Any) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except TypeError:
+            return str(value)
+
+    def _join_list(self, value: Any) -> str:
+        if isinstance(value, list):
+            return " | ".join(str(item) for item in value)
+        return str(value or "")
 
     def _row_from_response(self, response: dict[str, Any], event_type: str, screenshot_path: str = "", trigger_type: str = "", cycle: int | str = "") -> list[Any]:
         grading = response.get("war_grading") or {}
@@ -160,6 +226,13 @@ class GoogleSheetReader:
             response.get("velocity_after_failure", ""),
             response.get("next_action_for_python", ""),
             response.get("reason", ""),
+            response.get("memory_update", ""),
+            self._join_list(grading.get("missing_confirmations")),
+            self._join_list(grading.get("danger_signals")),
+            grading.get("why_not_full_hand", ""),
+            grading.get("what_would_upgrade_grade", ""),
+            grading.get("what_would_downgrade_grade", ""),
+            self._json_text(grading.get("factor_grades")),
             trigger_type or response.get("trigger_type", ""),
             cycle,
             screenshot_path,
@@ -180,10 +253,85 @@ class GoogleSheetReader:
             or "ENTRY" in decision
         )
 
-    def append_battle_log(self, response: dict[str, Any], event_type: str = "BATTLE_UPDATE", screenshot_path: str = "", trigger_type: str = "", cycle: int | str = "") -> None:
+    def _alert_text(self, response: dict[str, Any], event_type: str) -> str:
+        grading = response.get("war_grading") or {}
+        return (
+            f"SPX {event_type} | "
+            f"Status={response.get('battle_status')} | "
+            f"Decision={response.get('decision')} | "
+            f"Winner={response.get('winner')} | "
+            f"Grade={grading.get('trade_grade') or response.get('trade_grade')} | "
+            f"Confidence={response.get('confidence') or grading.get('grade_confidence')} | "
+            f"Reason={response.get('reason')} | "
+            f"Next={response.get('next_action_for_python')}"
+        )
+
+    def _alert_row(self, response: dict[str, Any], event_type: str, telegram_mode: str = "") -> list[Any]:
+        grading = response.get("war_grading") or {}
+        grade_value = grading.get("trade_grade") or response.get("trade_grade") or ""
+        confidence = response.get("confidence") or grading.get("grade_confidence") or ""
+        alert_level = "BEST_ALERT" if self._is_best_alert(response) else "COMMENTARY"
+        return [
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            event_type,
+            alert_level,
+            response.get("battle_status", ""),
+            response.get("decision", ""),
+            response.get("winner", ""),
+            grade_value,
+            confidence,
+            response.get("reason", ""),
+            response.get("next_action_for_python", ""),
+            telegram_mode,
+            self._alert_text(response, event_type),
+        ]
+
+    def _auto_check_row(self, response: dict[str, Any], event_type: str, screenshot_path: str, cycle: int | str) -> list[Any]:
+        grading = response.get("war_grading") or {}
+        return [
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            event_type,
+            cycle,
+            response.get("battle_status", ""),
+            response.get("decision", ""),
+            grading.get("overall_grade", ""),
+            grading.get("trade_grade", response.get("trade_grade", "")),
+            grading.get("grade_confidence", response.get("confidence", "")),
+            grading.get("grade_direction", ""),
+            self._join_list(grading.get("missing_confirmations")),
+            self._join_list(grading.get("danger_signals")),
+            grading.get("why_not_full_hand", ""),
+            grading.get("what_would_upgrade_grade", ""),
+            grading.get("what_would_downgrade_grade", ""),
+            response.get("memory_update", ""),
+            response.get("reason", ""),
+            screenshot_path,
+        ]
+
+    def append_watch_log(self, action: str, reason: str, trigger_type: str = "", call_rows_count: int = 0, put_rows_count: int = 0) -> None:
+        row = [
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            action,
+            trigger_type,
+            reason,
+            call_rows_count,
+            put_rows_count,
+            f"Watch action: {action} | {reason}",
+        ]
+        watch_log = self._get_or_create_worksheet("Watch_Log", WATCH_LOG_HEADERS, rows=10000)
+        watch_log.append_row(row, value_input_option="USER_ENTERED")
+
+    def append_battle_log(self, response: dict[str, Any], event_type: str = "BATTLE_UPDATE", screenshot_path: str = "", trigger_type: str = "", cycle: int | str = "", telegram_mode: str = "") -> None:
         row = self._row_from_response(response, event_type, screenshot_path=screenshot_path, trigger_type=trigger_type, cycle=cycle)
-        ai_log = self._get_or_create_worksheet("AI_Log", AI_LOG_HEADERS, rows=5000)
+        ai_log = self._get_or_create_worksheet("AI_Log", AI_LOG_HEADERS, rows=10000)
         ai_log.append_row(row, value_input_option="USER_ENTERED")
+
+        alert_log = self._get_or_create_worksheet("Alert_Log", ALERT_LOG_HEADERS, rows=10000)
+        alert_log.append_row(self._alert_row(response, event_type, telegram_mode=telegram_mode), value_input_option="USER_ENTERED")
+
+        auto_check = self._get_or_create_worksheet("Auto_Check", AUTO_CHECK_HEADERS, rows=10000)
+        auto_check.append_row(self._auto_check_row(response, event_type, screenshot_path, cycle), value_input_option="USER_ENTERED")
+
         if self._is_best_alert(response):
             best_alerts = self._get_or_create_worksheet("Best_Alerts", AI_LOG_HEADERS, rows=5000)
             best_alerts.append_row(row, value_input_option="USER_ENTERED")
@@ -192,11 +340,6 @@ class GoogleSheetReader:
         if not isinstance(zone, dict):
             return ""
         return zone.get(key, "")
-
-    def _join_list(self, value: Any) -> str:
-        if isinstance(value, list):
-            return " | ".join(str(item) for item in value)
-        return str(value or "")
 
     def _trigger_plan_row(self, trigger_plan: dict[str, Any], event_type: str, screenshot_path: str) -> list[Any]:
         call_zone = trigger_plan.get("call_battle_area") or {}
