@@ -62,6 +62,8 @@ TRIGGER_ZONE_HEADERS = [
     "screenshot_path",
 ]
 
+ZONE_VIEW_HEADERS = ["Field", "Latest LLM Battle Zone"]
+
 
 class GoogleSheetReader:
     def __init__(self, sheet_id: str, service_account_file: str | Path, call_tab: str, put_tab: str):
@@ -123,14 +125,14 @@ class GoogleSheetReader:
         put_rows = [self._normalize_row(row) for row in self._worksheet_rows(self.put_tab)]
         return call_rows[-limit:], put_rows[-limit:]
 
-    def _get_or_create_worksheet(self, tab_name: str, headers: list[str]):
+    def _get_or_create_worksheet(self, tab_name: str, headers: list[str], rows: int = 1000):
         if self.sheet is None:
             self.connect()
         assert self.sheet is not None
         try:
             worksheet = self.sheet.worksheet(tab_name)
         except Exception:
-            worksheet = self.sheet.add_worksheet(title=tab_name, rows=1000, cols=max(20, len(headers)))
+            worksheet = self.sheet.add_worksheet(title=tab_name, rows=rows, cols=max(20, len(headers)))
         current_headers = worksheet.row_values(1)
         if not current_headers:
             worksheet.append_row(headers, value_input_option="USER_ENTERED")
@@ -180,10 +182,10 @@ class GoogleSheetReader:
 
     def append_battle_log(self, response: dict[str, Any], event_type: str = "BATTLE_UPDATE", screenshot_path: str = "", trigger_type: str = "", cycle: int | str = "") -> None:
         row = self._row_from_response(response, event_type, screenshot_path=screenshot_path, trigger_type=trigger_type, cycle=cycle)
-        ai_log = self._get_or_create_worksheet("AI_Log", AI_LOG_HEADERS)
+        ai_log = self._get_or_create_worksheet("AI_Log", AI_LOG_HEADERS, rows=5000)
         ai_log.append_row(row, value_input_option="USER_ENTERED")
         if self._is_best_alert(response):
-            best_alerts = self._get_or_create_worksheet("Best_Alerts", AI_LOG_HEADERS)
+            best_alerts = self._get_or_create_worksheet("Best_Alerts", AI_LOG_HEADERS, rows=5000)
             best_alerts.append_row(row, value_input_option="USER_ENTERED")
 
     def _zone_value(self, zone: dict[str, Any] | None, key: str) -> Any:
@@ -234,7 +236,43 @@ class GoogleSheetReader:
             screenshot_path,
         ]
 
+    def _format_zone_text(self, exists_value: Any, low_value: Any, high_value: Any) -> str:
+        return f"Exists: {exists_value} | Low: {low_value} | High: {high_value}"
+
+    def _update_zone_view(self, row: list[Any]) -> None:
+        view_rows = [
+            ZONE_VIEW_HEADERS,
+            ["Last update", row[0]],
+            ["Event", row[1]],
+            ["Battlefield status", row[2]],
+            ["Market context", row[3]],
+            ["CALL zone", self._format_zone_text(row[4], row[5], row[6])],
+            ["CALL reason", row[7]],
+            ["CALL trigger", row[8]],
+            ["CALL invalidation", row[9]],
+            ["PUT zone", self._format_zone_text(row[10], row[11], row[12])],
+            ["PUT reason", row[13]],
+            ["PUT trigger", row[14]],
+            ["PUT invalidation", row[15]],
+            ["Consolidation", self._format_zone_text(row[16], row[17], row[18])],
+            ["Consolidation reason", row[19]],
+            ["Liquidity", self._format_zone_text(row[20], row[21], row[22])],
+            ["Liquidity reason", row[23]],
+            ["Next action", row[24]],
+            ["Watch conditions", row[25]],
+            ["Call LLM when", row[26]],
+            ["New screenshot when", row[27]],
+            ["Screenshot path", row[28]],
+        ]
+        view = self._get_or_create_worksheet("LLM_Zone_View", ZONE_VIEW_HEADERS, rows=100)
+        try:
+            view.clear()
+        except Exception:
+            pass
+        view.update("A1:B22", view_rows, value_input_option="USER_ENTERED")
+
     def append_trigger_plan_log(self, trigger_plan: dict[str, Any], screenshot_path: str = "", event_type: str = "LLM_BATTLE_ZONE") -> None:
         row = self._trigger_plan_row(trigger_plan, event_type=event_type, screenshot_path=screenshot_path)
-        trigger_zones = self._get_or_create_worksheet("Trigger_Zones", TRIGGER_ZONE_HEADERS)
+        trigger_zones = self._get_or_create_worksheet("Trigger_Zones", TRIGGER_ZONE_HEADERS, rows=5000)
         trigger_zones.append_row(row, value_input_option="USER_ENTERED")
+        self._update_zone_view(row)
