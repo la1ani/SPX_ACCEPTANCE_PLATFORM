@@ -35,9 +35,16 @@ class BattleLoop:
             self.db.save_battle_observation(session_id, latest_screenshot, call_rows, put_rows, latest_response)
             self.db.save_war_grade_history(session_id, latest_screenshot, call_rows, put_rows, latest_response)
             try:
-                self.sheet_reader.append_battle_log(latest_response, event_type="BATTLE_UPDATE", screenshot_path=latest_screenshot, trigger_type=trigger_type, cycle=cycle)
+                self.sheet_reader.append_battle_log(
+                    latest_response,
+                    event_type="BATTLE_UPDATE",
+                    screenshot_path=latest_screenshot,
+                    trigger_type=trigger_type,
+                    cycle=cycle,
+                    telegram_mode=getattr(self.alert_manager, "mode", "") if self.alert_manager else "",
+                )
             except Exception as exc:  # noqa: BLE001 - logging should not stop battle analysis
-                print(f"[sheet-log] Could not write AI_Log / Best_Alerts: {exc}")
+                print(f"[sheet-log] Could not write AI_Log / Alert_Log / Auto_Check / Best_Alerts: {exc}")
             memory.append({"cycle": cycle, "decision": latest_response.get("decision"), "status": latest_response.get("battle_status"), "message": latest_response.get("memory_update", ""), "reason": latest_response.get("reason", "")})
             grade_history.append(latest_response.get("war_grading", {}))
             if self.alert_manager:
