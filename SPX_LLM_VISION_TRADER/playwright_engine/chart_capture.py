@@ -12,6 +12,11 @@ class ChartCapture:
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     async def capture(self, page: Page, prefix: str = "chart") -> str:
+        try:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+        except Exception:
+            pass
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = self.screenshot_dir / f"{prefix}_{ts}.png"
         await page.screenshot(path=str(path), full_page=True)
