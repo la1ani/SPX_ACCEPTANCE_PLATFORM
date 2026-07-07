@@ -138,7 +138,7 @@ class GoogleSheetReader:
 
     def _row_from_response(self, response: dict[str, Any], event_type: str, screenshot_path: str = "", trigger_type: str = "", cycle: int | str = "") -> list[Any]:
         grading = response.get("war_grading") or {}
-        trade_grade = grading.get("trade_grade") or response.get("trade_grade") or ""
+        grade_value = grading.get("trade_grade") or response.get("trade_grade") or ""
         confidence = response.get("confidence") or grading.get("grade_confidence") or ""
         return [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -148,7 +148,7 @@ class GoogleSheetReader:
             response.get("winner", ""),
             response.get("weak_side", ""),
             response.get("strong_side", ""),
-            trade_grade,
+            grade_value,
             confidence,
             response.get("holding_time_status", ""),
             response.get("rejection_confirmed", ""),
@@ -165,15 +165,15 @@ class GoogleSheetReader:
 
     def _is_best_alert(self, response: dict[str, Any]) -> bool:
         grading = response.get("war_grading") or {}
-        trade_grade = str(grading.get("trade_grade") or response.get("trade_grade") or "").upper()
-        winner = str(response.get("winner") or "").upper()
+        grade_value = str(grading.get("trade_grade") or response.get("trade_grade") or "").upper()
+        side_value = str(response.get("winner") or "").upper()
         decision = str(response.get("decision") or "").upper()
         status = str(response.get("battle_status") or "").upper()
         strong_grades = {"LIGHT_HAND", "HALF_HAND", "FULL_HAND", "SUPER_HAND", "ENTRY", "ENTER"}
         return (
             status == "FINAL"
-            or winner in {"CALL", "CALLS", "PUT", "PUTS"}
-            or trade_grade in strong_grades
+            or side_value in {"CALL", "CALLS", "PUT", "PUTS"}
+            or grade_value in strong_grades
             or "ENTER" in decision
             or "ENTRY" in decision
         )
