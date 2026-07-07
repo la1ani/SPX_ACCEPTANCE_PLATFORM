@@ -60,6 +60,25 @@ async def run_live(args: argparse.Namespace) -> None:
             console.print(f"Watch action: {watch_result.action} | {watch_result.reason}")
 
             if watch_result.action == "START_BATTLE":
+                try:
+                    sheet_reader.append_battle_log(
+                        {
+                            "battle_status": "TRIGGER_TOUCHED",
+                            "decision": "START_BATTLE",
+                            "trigger_type": watch_result.trigger_type,
+                            "winner": "NONE",
+                            "trade_grade": "WATCH_ONLY",
+                            "confidence": "WATCH",
+                            "reason": watch_result.reason,
+                            "next_action_for_python": "CALL_LLM_BATTLE_ANALYZER",
+                        },
+                        event_type="TRIGGER_TOUCHED",
+                        screenshot_path="",
+                        trigger_type=watch_result.trigger_type,
+                        cycle="",
+                    )
+                except Exception as exc:  # noqa: BLE001 - logging should not stop battle start
+                    console.print(f"[yellow][sheet-log] Could not write trigger touch: {exc}[/yellow]")
                 loop = BattleLoop(db, battle_analyzer, capture, sheet_reader, settings.battle_loop_seconds, alert_manager)
                 result = await loop.run(page, trigger_plan_id, trigger_plan, watch_result.trigger_type, max_cycles=args.max_battle_cycles)
                 console.print(f"LLM battle result: {result.get('decision')} | {result.get('battle_status')}")
