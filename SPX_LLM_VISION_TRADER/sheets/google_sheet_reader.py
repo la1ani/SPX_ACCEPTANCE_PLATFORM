@@ -58,6 +58,11 @@ WATCH_LOG_HEADERS = [
     "watch_action",
     "trigger_type",
     "reason",
+    "data_status",
+    "latest_call_price",
+    "latest_put_price",
+    "call_source",
+    "put_source",
     "call_rows_count",
     "put_rows_count",
     "commentary",
@@ -119,11 +124,21 @@ ZONE_VIEW_HEADERS = ["Field", "Latest LLM Battle Zone"]
 
 
 class GoogleSheetReader:
-    def __init__(self, sheet_id: str, service_account_file: str | Path, call_tab: str, put_tab: str):
+    def __init__(
+        self,
+        sheet_id: str,
+        service_account_file: str | Path,
+        call_tab: str,
+        put_tab: str,
+        call_link_tab: str = "CALLS_LINK",
+        put_link_tab: str = "PUTS_LINK",
+    ):
         self.sheet_id = sheet_id
         self.service_account_file = Path(service_account_file)
         self.call_tab = call_tab
         self.put_tab = put_tab
+        self.call_link_tab = call_link_tab
+        self.put_link_tab = put_link_tab
         self.client = None
         self.sheet = None
 
@@ -145,7 +160,18 @@ class GoogleSheetReader:
         if self.sheet is None:
             self.connect()
         assert self.sheet is not None
-        return self.sheet.worksheet(tab_name).get_all_records()
+        rows = self.sheet.worksheet(tab_name).get_all_records()
+        for row in rows:
+            row["_source_tab"] = tab_name
+        return rows
+
+    def _worksheet_rows_safe(self, tab_name: str) -> list[dict[str, Any]]:
+        if not tab_name:
+            return []
+        try:
+            return self._worksheet_rows(tab_name)
+        except Exception:
+            return []
 
     def _clean_key(self, key: str) -> str:
         key = str(key or "").strip().lower()
@@ -164,7 +190,17 @@ class GoogleSheetReader:
 
     def _normalize_row(self, row: dict[str, Any]) -> dict[str, Any]:
         normalized = {self._clean_key(k): self._number(v) for k, v in row.items()}
-        aliases = {"timestamp": ["time", "datetime", "date_time", "created_at"], "price": ["close", "last", "ltp", "option_price"], "high": ["h"], "low": ["l"], "volume": ["vol", "contracts"], "velocity": ["speed", "delta_speed"]}
+        if "_source_tab" in row:
+            normalized["_source_tab"] = row.get("_source_tab")
+            normalized["source_tab"] = row.get("_source_tab")
+        aliases = {
+            "timestamp": ["time", "datetime", "date_time", "created_at", "alert_time"],
+            "price": ["close", "last", "ltp", "option_price", "current_price", "value"],
+            "high": ["h"],
+            "low": ["l"],
+            "volume": ["vol", "contracts"],
+            "velocity": ["speed", "delta_speed"],
+        }
         for target, keys in aliases.items():
             if target not in normalized or normalized.get(target) in (None, ""):
                 for candidate in keys:
@@ -173,10 +209,44 @@ class GoogleSheetReader:
                         break
         return normalized
 
+    def _row_time_value(self, row: dict[str, Any]) -> float:
+        for key in ("timestamp", "time", "datetime", "date_time", "created_at", "alert_time"):
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            if isinstance(value, (int, float)):
+                return float(value)
+            text = str(value).strip().replace("Z", "")
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%m/%d/%Y %H:%M:%S", "%H:%M:%S", "%H:%M"):
+                try:
+                    parsed = datetime.strptime(text, fmt)
+                    if fmt.startswith("%H"):
+                        now = datetime.now()
+                        parsed = parsed.replace(year=now.year, month=now.month, day=now.day)
+                    return parsed.timestamp()
+                except ValueError:
+                    continue
+            try:
+                return datetime.fromisoformat(text).timestamp()
+            except ValueError:
+                continue
+        return 0.0
+
+    def _merge_live_tabs(self, primary_tab: str, fast_tab: str, limit: int) -> list[dict[str, Any]]:
+        primary_rows = [self._normalize_row(row) for row in self._worksheet_rows_safe(primary_tab)]
+        fast_rows = [self._normalize_row(row) for row in self._worksheet_rows_safe(fast_tab)]
+        combined = primary_rows + fast_rows
+        if not combined:
+            return []
+        combined.sort(key=self._row_time_value)
+        return combined[-limit:]
+
     def read_recent(self, limit: int = 50) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        call_rows = [self._normalize_row(row) for row in self._worksheet_rows(self.call_tab)]
-        put_rows = [self._normalize_row(row) for row in self._worksheet_rows(self.put_tab)]
-        return call_rows[-limit:], put_rows[-limit:]
+        # IMPORTANT: Triggers use live sheet data, not chart guesses.
+        # CALLS/PUTS = main decision feed. CALLS_LINK/PUTS_LINK = faster live sensor feed.
+        call_rows = self._merge_live_tabs(self.call_tab, self.call_link_tab, limit)
+        put_rows = self._merge_live_tabs(self.put_tab, self.put_link_tab, limit)
+        return call_rows, put_rows
 
     def _get_or_create_worksheet(self, tab_name: str, headers: list[str], rows: int = 1000):
         if self.sheet is None:
@@ -308,12 +378,29 @@ class GoogleSheetReader:
             screenshot_path,
         ]
 
-    def append_watch_log(self, action: str, reason: str, trigger_type: str = "", call_rows_count: int = 0, put_rows_count: int = 0) -> None:
+    def append_watch_log(
+        self,
+        action: str,
+        reason: str,
+        trigger_type: str = "",
+        call_rows_count: int = 0,
+        put_rows_count: int = 0,
+        data_status: str = "",
+        latest_call_price: Any = "",
+        latest_put_price: Any = "",
+        call_source: str = "",
+        put_source: str = "",
+    ) -> None:
         row = [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             action,
             trigger_type,
             reason,
+            data_status,
+            latest_call_price,
+            latest_put_price,
+            call_source,
+            put_source,
             call_rows_count,
             put_rows_count,
             f"Watch action: {action} | {reason}",
