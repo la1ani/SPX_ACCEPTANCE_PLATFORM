@@ -32,6 +32,13 @@ def _log_trigger_zone(sheet_reader: GoogleSheetReader, trigger_plan: dict, scree
         console.print(f"[yellow][sheet-log] Could not write Trigger_Zones: {exc}[/yellow]")
 
 
+def _log_watch_commentary(sheet_reader: GoogleSheetReader, action: str, reason: str, trigger_type: str, call_rows_count: int, put_rows_count: int) -> None:
+    try:
+        sheet_reader.append_watch_log(action, reason, trigger_type=trigger_type, call_rows_count=call_rows_count, put_rows_count=put_rows_count)
+    except Exception as exc:  # noqa: BLE001 - logging should not stop live run
+        console.print(f"[yellow][sheet-log] Could not write Watch_Log: {exc}[/yellow]")
+
+
 async def run_live(args: argparse.Namespace) -> None:
     settings = load_settings()
     if settings.strict_mode_enabled:
@@ -66,6 +73,7 @@ async def run_live(args: argparse.Namespace) -> None:
             db.save_sheet_snapshot(call_rows, put_rows)
             watch_result = watcher.check(call_rows, put_rows)
             console.print(f"Watch action: {watch_result.action} | {watch_result.reason}")
+            _log_watch_commentary(sheet_reader, watch_result.action, watch_result.reason, watch_result.trigger_type, len(call_rows), len(put_rows))
 
             if watch_result.action == "START_BATTLE":
                 trigger_touch_response = {
@@ -85,6 +93,7 @@ async def run_live(args: argparse.Namespace) -> None:
                         screenshot_path="",
                         trigger_type=watch_result.trigger_type,
                         cycle="",
+                        telegram_mode=settings.alert_mode,
                     )
                 except Exception as exc:  # noqa: BLE001 - logging should not stop battle start
                     console.print(f"[yellow][sheet-log] Could not write trigger touch: {exc}[/yellow]")
