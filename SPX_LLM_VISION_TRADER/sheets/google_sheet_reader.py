@@ -30,6 +30,38 @@ AI_LOG_HEADERS = [
     "screenshot_path",
 ]
 
+TRIGGER_ZONE_HEADERS = [
+    "timestamp",
+    "event_type",
+    "battlefield_status",
+    "market_context",
+    "call_zone_exists",
+    "call_zone_low",
+    "call_zone_high",
+    "call_visual_reason",
+    "call_trigger_condition",
+    "call_invalidation_condition",
+    "put_zone_exists",
+    "put_zone_low",
+    "put_zone_high",
+    "put_visual_reason",
+    "put_trigger_condition",
+    "put_invalidation_condition",
+    "consolidation_exists",
+    "consolidation_low",
+    "consolidation_high",
+    "consolidation_reason",
+    "liquidity_exists",
+    "liquidity_low",
+    "liquidity_high",
+    "liquidity_reason",
+    "next_action",
+    "watch_conditions",
+    "call_llm_when",
+    "new_screenshot_when",
+    "screenshot_path",
+]
+
 
 class GoogleSheetReader:
     def __init__(self, sheet_id: str, service_account_file: str | Path, call_tab: str, put_tab: str):
@@ -153,3 +185,56 @@ class GoogleSheetReader:
         if self._is_best_alert(response):
             best_alerts = self._get_or_create_worksheet("Best_Alerts", AI_LOG_HEADERS)
             best_alerts.append_row(row, value_input_option="USER_ENTERED")
+
+    def _zone_value(self, zone: dict[str, Any] | None, key: str) -> Any:
+        if not isinstance(zone, dict):
+            return ""
+        return zone.get(key, "")
+
+    def _join_list(self, value: Any) -> str:
+        if isinstance(value, list):
+            return " | ".join(str(item) for item in value)
+        return str(value or "")
+
+    def _trigger_plan_row(self, trigger_plan: dict[str, Any], event_type: str, screenshot_path: str) -> list[Any]:
+        call_zone = trigger_plan.get("call_battle_area") or {}
+        put_zone = trigger_plan.get("put_battle_area") or {}
+        consolidation = trigger_plan.get("consolidation_zone") or {}
+        liquidity = trigger_plan.get("liquidity_zone") or {}
+        watch_plan = trigger_plan.get("watch_plan") or {}
+        return [
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            event_type,
+            trigger_plan.get("battlefield_status", ""),
+            trigger_plan.get("market_context", ""),
+            self._zone_value(call_zone, "exists"),
+            self._zone_value(call_zone, "zone_low"),
+            self._zone_value(call_zone, "zone_high"),
+            self._zone_value(call_zone, "visual_reason"),
+            self._zone_value(call_zone, "trigger_condition"),
+            self._zone_value(call_zone, "invalidation_condition"),
+            self._zone_value(put_zone, "exists"),
+            self._zone_value(put_zone, "zone_low"),
+            self._zone_value(put_zone, "zone_high"),
+            self._zone_value(put_zone, "visual_reason"),
+            self._zone_value(put_zone, "trigger_condition"),
+            self._zone_value(put_zone, "invalidation_condition"),
+            self._zone_value(consolidation, "exists"),
+            self._zone_value(consolidation, "zone_low"),
+            self._zone_value(consolidation, "zone_high"),
+            self._zone_value(consolidation, "visual_reason"),
+            self._zone_value(liquidity, "exists"),
+            self._zone_value(liquidity, "zone_low"),
+            self._zone_value(liquidity, "zone_high"),
+            self._zone_value(liquidity, "visual_reason"),
+            trigger_plan.get("next_action", ""),
+            self._join_list(watch_plan.get("conditions_to_watch")),
+            self._join_list(watch_plan.get("call_llm_when")),
+            self._join_list(watch_plan.get("new_screenshot_when")),
+            screenshot_path,
+        ]
+
+    def append_trigger_plan_log(self, trigger_plan: dict[str, Any], screenshot_path: str = "", event_type: str = "LLM_BATTLE_ZONE") -> None:
+        row = self._trigger_plan_row(trigger_plan, event_type=event_type, screenshot_path=screenshot_path)
+        trigger_zones = self._get_or_create_worksheet("Trigger_Zones", TRIGGER_ZONE_HEADERS)
+        trigger_zones.append_row(row, value_input_option="USER_ENTERED")
