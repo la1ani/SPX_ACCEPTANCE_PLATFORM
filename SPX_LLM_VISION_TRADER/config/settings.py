@@ -34,6 +34,8 @@ class Settings:
     google_sheet_id: str
     call_sheet_tab: str
     put_sheet_tab: str
+    call_link_tab: str
+    put_link_tab: str
     google_service_account_file: str
     screenshot_interval_seconds: int
     battle_loop_seconds: int
@@ -90,10 +92,12 @@ def load_settings(env_file: Optional[str] = None) -> Settings:
         llm_api_key=os.getenv(SECRET_NAME, os.getenv(OPENAI_SECRET_NAME, "")).strip(),
         tradingview_url=os.getenv("TRADINGVIEW_URL", "").strip(),
         google_sheet_id=os.getenv("GOOGLE_SHEET_ID", "").strip(),
-        call_sheet_tab=os.getenv("CALL_SHEET_TAB", "CALL").strip(),
-        put_sheet_tab=os.getenv("PUT_SHEET_TAB", "PUT").strip(),
+        call_sheet_tab=os.getenv("CALL_SHEET_TAB", "CALLS").strip(),
+        put_sheet_tab=os.getenv("PUT_SHEET_TAB", "PUTS").strip(),
+        call_link_tab=os.getenv("CALL_LINK_TAB", "CALLS_LINK").strip(),
+        put_link_tab=os.getenv("PUT_LINK_TAB", "PUTS_LINK").strip(),
         google_service_account_file=os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip(),
-        screenshot_interval_seconds=_int_env("SCREENSHOT_INTERVAL_SECONDS", 30),
+        screenshot_interval_seconds=_int_env("SCREENSHOT_INTERVAL_SECONDS", 15),
         battle_loop_seconds=_int_env("BATTLE_LOOP_SECONDS", 10),
         database_path=database_path,
         output_dir=output_dir,
