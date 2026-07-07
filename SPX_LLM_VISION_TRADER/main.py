@@ -25,6 +25,13 @@ from watcher.trigger_watcher import TriggerWatcher
 console = Console()
 
 
+def _log_trigger_zone(sheet_reader: GoogleSheetReader, trigger_plan: dict, screenshot_path: str, event_type: str) -> None:
+    try:
+        sheet_reader.append_trigger_plan_log(trigger_plan, screenshot_path=screenshot_path, event_type=event_type)
+    except Exception as exc:  # noqa: BLE001 - logging should not stop live run
+        console.print(f"[yellow][sheet-log] Could not write Trigger_Zones: {exc}[/yellow]")
+
+
 async def run_live(args: argparse.Namespace) -> None:
     settings = load_settings()
     if settings.strict_mode_enabled:
@@ -50,6 +57,7 @@ async def run_live(args: argparse.Namespace) -> None:
         trigger_plan = trigger_plan_model.model_dump()
         db.save_raw_llm_response("trigger", raw, trigger_plan)
         trigger_plan_id = db.save_trigger_plan(initial_screenshot, trigger_plan)
+        _log_trigger_zone(sheet_reader, trigger_plan, initial_screenshot, "INITIAL_LLM_BATTLE_ZONE")
         watcher = TriggerWatcher(trigger_plan, max_age_seconds=max(120, settings.screenshot_interval_seconds * 10))
         console.print("[green]LLM trigger plan saved. Watch loop started.[/green]")
 
@@ -60,18 +68,19 @@ async def run_live(args: argparse.Namespace) -> None:
             console.print(f"Watch action: {watch_result.action} | {watch_result.reason}")
 
             if watch_result.action == "START_BATTLE":
+                trigger_touch_response = {
+                    "battle_status": "TRIGGER_TOUCHED",
+                    "decision": "START_BATTLE",
+                    "trigger_type": watch_result.trigger_type,
+                    "winner": "NONE",
+                    "trade_grade": "WATCH_ONLY",
+                    "confidence": "WATCH",
+                    "reason": watch_result.reason,
+                    "next_action_for_python": "CALL_LLM_BATTLE_ANALYZER",
+                }
                 try:
                     sheet_reader.append_battle_log(
-                        {
-                            "battle_status": "TRIGGER_TOUCHED",
-                            "decision": "START_BATTLE",
-                            "trigger_type": watch_result.trigger_type,
-                            "winner": "NONE",
-                            "trade_grade": "WATCH_ONLY",
-                            "confidence": "WATCH",
-                            "reason": watch_result.reason,
-                            "next_action_for_python": "CALL_LLM_BATTLE_ANALYZER",
-                        },
+                        trigger_touch_response,
                         event_type="TRIGGER_TOUCHED",
                         screenshot_path="",
                         trigger_type=watch_result.trigger_type,
@@ -79,6 +88,7 @@ async def run_live(args: argparse.Namespace) -> None:
                     )
                 except Exception as exc:  # noqa: BLE001 - logging should not stop battle start
                     console.print(f"[yellow][sheet-log] Could not write trigger touch: {exc}[/yellow]")
+                alert_manager.send_battle_update(trigger_touch_response)
                 loop = BattleLoop(db, battle_analyzer, capture, sheet_reader, settings.battle_loop_seconds, alert_manager)
                 result = await loop.run(page, trigger_plan_id, trigger_plan, watch_result.trigger_type, max_cycles=args.max_battle_cycles)
                 console.print(f"LLM battle result: {result.get('decision')} | {result.get('battle_status')}")
@@ -88,6 +98,7 @@ async def run_live(args: argparse.Namespace) -> None:
                     trigger_plan = trigger_plan_model.model_dump()
                     db.save_raw_llm_response("trigger", raw, trigger_plan)
                     trigger_plan_id = db.save_trigger_plan(new_screenshot, trigger_plan)
+                    _log_trigger_zone(sheet_reader, trigger_plan, new_screenshot, "NEW_LLM_BATTLE_ZONE")
                     watcher.update_plan(trigger_plan)
                 else:
                     await asyncio.sleep(settings.screenshot_interval_seconds)
@@ -98,6 +109,7 @@ async def run_live(args: argparse.Namespace) -> None:
                 trigger_plan = trigger_plan_model.model_dump()
                 db.save_raw_llm_response("trigger", raw, trigger_plan)
                 trigger_plan_id = db.save_trigger_plan(new_screenshot, trigger_plan)
+                _log_trigger_zone(sheet_reader, trigger_plan, new_screenshot, "NEW_LLM_BATTLE_ZONE")
                 watcher.update_plan(trigger_plan)
                 console.print("[green]New LLM trigger plan saved.[/green]")
             else:
