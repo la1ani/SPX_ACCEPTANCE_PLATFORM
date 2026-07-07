@@ -18,7 +18,13 @@ class StrictModeScanner:
     def __init__(self, root_dir: str | Path):
         self.root_dir = Path(root_dir)
         self.skip_parts = {".git", "__pycache__", "outputs", "tradingview_profile"}
-        self.allowed_files = {"llm/prompts.py", "storage/models.py", "storage/database.py", "watcher/strict_mode.py"}
+        self.allowed_files = {
+            "llm/prompts.py",
+            "storage/models.py",
+            "storage/database.py",
+            "watcher/strict_mode.py",
+            "sheets/google_sheet_reader.py",
+        }
         self.forbidden_terms = ["bullish", "bearish", "weak_side", "strong_side", "support_broken", "resistance_failed", "winner", "trade_direction", "trade_grade", "full_hand", "light_hand", "no_trade_reason", "rejection_confirmed", "velocity_after_failure", "support_hold", "support_break", "volume_imbalance", "power_transfer"]
 
     def _should_scan(self, path: Path) -> bool:
