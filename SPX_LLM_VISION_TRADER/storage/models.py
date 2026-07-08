@@ -11,6 +11,19 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def stringify_llm_value(value: Any, default: str = "") -> str:
+    """Coerce flexible LLM outputs into safe strings for strict Pydantic fields."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " | ".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return "; ".join(f"{k}: {v}" for k, v in value.items())
+    return str(value)
+
+
 class Zone(BaseModel):
     model_config = ConfigDict(extra="allow")
     exists: bool = False
@@ -58,6 +71,11 @@ class TriggerPlan(BaseModel):
     watch_plan: WatchPlan = Field(default_factory=WatchPlan)
     python_instructions: PythonInstructions = Field(default_factory=PythonInstructions)
     next_action: str = "WATCH"
+
+    @field_validator("battlefield_status", "market_context", "next_action", mode="before")
+    @classmethod
+    def _coerce_trigger_strings(cls, value: Any) -> str:
+        return stringify_llm_value(value)
 
     @field_validator("call_battle_area", "put_battle_area", mode="before")
     @classmethod
@@ -125,6 +143,11 @@ class FactorGrade(BaseModel):
     direction_impact: str = "NEUTRAL"
     reason: str = ""
 
+    @field_validator("factor", "grade", "status", "direction_impact", "reason", mode="before")
+    @classmethod
+    def _coerce_factor_strings(cls, value: Any) -> str:
+        return stringify_llm_value(value)
+
 
 class WarGrade(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -138,6 +161,20 @@ class WarGrade(BaseModel):
     why_not_full_hand: str = ""
     what_would_upgrade_grade: str = ""
     what_would_downgrade_grade: str = ""
+
+    @field_validator("overall_grade", "trade_grade", "grade_confidence", "grade_direction", "why_not_full_hand", "what_would_upgrade_grade", "what_would_downgrade_grade", mode="before")
+    @classmethod
+    def _coerce_war_strings(cls, value: Any) -> str:
+        return stringify_llm_value(value)
+
+    @field_validator("missing_confirmations", "danger_signals", mode="before")
+    @classmethod
+    def _coerce_string_list(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [stringify_llm_value(v) for v in value]
+        return [stringify_llm_value(value)]
 
 
 class BattleDecision(BaseModel):
@@ -162,6 +199,26 @@ class BattleDecision(BaseModel):
     memory_update: str = ""
     next_action_for_python: str = "GET_NEW_SCREENSHOT_AND_SHEET_DATA"
     next_check_seconds: int = 10
+
+    @field_validator(
+        "battle_status",
+        "decision",
+        "trigger_type",
+        "attacking_side",
+        "weak_side",
+        "strong_side",
+        "holding_time_status",
+        "winner",
+        "trade_grade",
+        "confidence",
+        "reason",
+        "memory_update",
+        "next_action_for_python",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_decision_strings(cls, value: Any) -> str:
+        return stringify_llm_value(value)
 
 
 class SheetSnapshot(BaseModel):
