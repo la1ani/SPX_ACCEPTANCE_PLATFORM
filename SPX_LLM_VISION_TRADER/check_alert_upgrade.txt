@@ -1,0 +1,1 @@
+Alert upgrade applied: main.py uses BattleAnalyzerV2. Added prompts_battle_v2.py, battle_analyzer_v2.py, alert_intelligence.py. Alerts should now include FIGHTING_STARTED, heavy/weak side, rejection, support break, volume imbalance, velocity after failure, entry/exit action, and trade grade.
