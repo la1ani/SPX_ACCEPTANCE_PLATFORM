@@ -1,0 +1,1 @@
+Battle commentary upgrade applied: Battle_Commentary and Entry_Exit_Log are now written during battle loop. Prompts v2 require FIGHTING_STARTED, heavy/weak side, rejection, holding time, weak-side support break, opposite support hold, volume imbalance, velocity after failure, entry reason, exit reason, and trade grade.
