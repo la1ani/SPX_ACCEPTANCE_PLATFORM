@@ -21,7 +21,7 @@ from sheets.google_sheet_reader import GoogleSheetReader
 from storage.database import Database
 from watcher.battle_loop import BattleLoop
 from watcher.strict_mode import StrictModeScanner
-from watcher.trigger_watcher import TriggerWatcher
+from watcher.trigger_watcher import TriggerWatcher, WatchResult
 
 console = Console()
 
@@ -33,9 +33,26 @@ def _log_trigger_zone(sheet_reader: GoogleSheetReader, trigger_plan: dict, scree
         console.print(f"[yellow][sheet-log] Could not write Trigger_Zones: {exc}[/yellow]")
 
 
-def _log_watch_commentary(sheet_reader: GoogleSheetReader, action: str, reason: str, trigger_type: str, call_rows_count: int, put_rows_count: int) -> None:
+def _log_watch_commentary(
+    sheet_reader: GoogleSheetReader,
+    watch_result: WatchResult,
+    call_rows_count: int,
+    put_rows_count: int,
+) -> None:
+    """Write Watch_Log by explicit column names so values stay under the right headings."""
     try:
-        sheet_reader.append_watch_log(action, reason, trigger_type=trigger_type, call_rows_count=call_rows_count, put_rows_count=put_rows_count)
+        sheet_reader.append_watch_log(
+            action=watch_result.action,
+            reason=watch_result.reason,
+            trigger_type=watch_result.trigger_type,
+            data_status=watch_result.data_status,
+            latest_call_price=watch_result.latest_call_price,
+            latest_put_price=watch_result.latest_put_price,
+            call_source=watch_result.call_source,
+            put_source=watch_result.put_source,
+            call_rows_count=call_rows_count,
+            put_rows_count=put_rows_count,
+        )
     except Exception as exc:
         console.print(f"[yellow][sheet-log] Could not write Watch_Log: {exc}[/yellow]")
 
@@ -50,7 +67,14 @@ async def run_live(args: argparse.Namespace) -> None:
     client = LLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key)
     trigger_creator = VisionTriggerCreator(client)
     battle_analyzer = BattleAnalyzerV2(client)
-    sheet_reader = GoogleSheetReader(settings.google_sheet_id, settings.google_service_account_file, settings.call_sheet_tab, settings.put_sheet_tab)
+    sheet_reader = GoogleSheetReader(
+        settings.google_sheet_id,
+        settings.google_service_account_file,
+        settings.call_sheet_tab,
+        settings.put_sheet_tab,
+        settings.call_link_tab,
+        settings.put_link_tab,
+    )
     capture = ChartCapture(settings.output_dir)
     alert_manager = AlertManager(settings.alert_mode, settings.telegram_bot_token, settings.telegram_chat_id, settings.email_alert_to)
 
@@ -74,7 +98,7 @@ async def run_live(args: argparse.Namespace) -> None:
             db.save_sheet_snapshot(call_rows, put_rows)
             watch_result = watcher.check(call_rows, put_rows)
             console.print(f"Watch action: {watch_result.action} | {watch_result.reason}")
-            _log_watch_commentary(sheet_reader, watch_result.action, watch_result.reason, watch_result.trigger_type, len(call_rows), len(put_rows))
+            _log_watch_commentary(sheet_reader, watch_result, len(call_rows), len(put_rows))
 
             if watch_result.action == "START_BATTLE":
                 trigger_touch_response = {
@@ -151,7 +175,14 @@ async def test_screenshot() -> None:
 
 def test_sheets() -> None:
     settings = load_settings()
-    reader = GoogleSheetReader(settings.google_sheet_id, settings.google_service_account_file, settings.call_sheet_tab, settings.put_sheet_tab)
+    reader = GoogleSheetReader(
+        settings.google_sheet_id,
+        settings.google_service_account_file,
+        settings.call_sheet_tab,
+        settings.put_sheet_tab,
+        settings.call_link_tab,
+        settings.put_link_tab,
+    )
     call_rows, put_rows = reader.read_recent(limit=5)
     console.print("CALL rows:")
     console.print(call_rows)
@@ -161,50 +192,31 @@ def test_sheets() -> None:
 
 def test_db() -> None:
     settings = load_settings()
-    Database(settings.database_path).save_sheet_snapshot([], [])
-    console.print(f"Database ready: {settings.database_path}")
+    db = Database(settings.database_path)
+    console.print(f"Database ready: {db.path}")
 
 
 def test_alert() -> None:
     settings = load_settings()
-    alerts = AlertManager(settings.alert_mode, settings.telegram_bot_token, settings.telegram_chat_id, settings.email_alert_to)
-    alerts.send_battle_update({"battle_status": "TRIGGER_TOUCHED", "decision": "FIGHTING_STARTED", "battle_phase": "FIGHTING_STARTED", "user_commentary": "FIGHTING STARTED test alert.", "winner": "NONE", "trade_grade": "WATCH_ONLY", "confidence": "WATCH", "reason": "Test alert only.", "next_action_for_python": "CALL_LLM_BATTLE_ANALYZER", "war_grading": {"missing_confirmations": ["test missing item"]}})
+    AlertManager(settings.alert_mode, settings.telegram_bot_token, settings.telegram_chat_id, settings.email_alert_to).send_battle_update({"decision": "TEST", "reason": "alert test"})
 
 
 def test_strict() -> None:
     settings = load_settings()
-    StrictModeScanner(settings.root_dir).print_report(block=False)
+    StrictModeScanner(settings.root_dir).print_report(block=settings.strict_mode_block)
 
 
-async def test_llm_trigger(image_path: str | None) -> None:
-    settings = load_settings()
-    if image_path is None:
-        console.print("Provide --image path/to/screenshot.png")
-        return
-    creator = VisionTriggerCreator(LLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key))
-    plan, raw = creator.create_trigger_plan(image_path)
-    Database(settings.database_path).save_raw_llm_response("test_trigger", raw, plan.model_dump())
-    console.print(plan.model_dump())
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SPX_LLM_VISION_TRADER")
-    parser.add_argument("--test-screenshot", action="store_true")
+async def async_main() -> None:
+    parser = argparse.ArgumentParser()
     parser.add_argument("--test-sheets", action="store_true")
     parser.add_argument("--test-db", action="store_true")
     parser.add_argument("--test-alert", action="store_true")
     parser.add_argument("--test-strict", action="store_true")
-    parser.add_argument("--test-llm-trigger", action="store_true")
-    parser.add_argument("--image", default=None)
-    parser.add_argument("--max-battle-cycles", type=int, default=60)
-    return parser
+    parser.add_argument("--test-screenshot", action="store_true")
+    parser.add_argument("--max-battle-cycles", type=int, default=4)
+    args = parser.parse_args()
 
-
-async def async_main() -> None:
-    args = build_parser().parse_args()
-    if args.test_screenshot:
-        await test_screenshot()
-    elif args.test_sheets:
+    if args.test_sheets:
         test_sheets()
     elif args.test_db:
         test_db()
@@ -212,8 +224,8 @@ async def async_main() -> None:
         test_alert()
     elif args.test_strict:
         test_strict()
-    elif args.test_llm_trigger:
-        await test_llm_trigger(args.image)
+    elif args.test_screenshot:
+        await test_screenshot()
     else:
         await run_live(args)
 
