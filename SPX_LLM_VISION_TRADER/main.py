@@ -1,6 +1,7 @@
 """Entry point for SPX_LLM_VISION_TRADER.
 
-This program captures evidence, calls the LLM, and stores the LLM response.
+This program captures evidence, calls the LLM, writes Google Sheet logs, and stores LLM responses.
+Python does not decide the trade. The LLM grades the battle.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from rich.console import Console
 
 from alerts.alert_manager import AlertManager
 from config.settings import load_settings
-from llm.battle_analyzer import BattleAnalyzer
+from llm.battle_analyzer_v2 import BattleAnalyzerV2
 from llm.llm_client import LLMClient
 from llm.vision_trigger_creator import VisionTriggerCreator
 from playwright_engine.chart_capture import ChartCapture
@@ -28,14 +29,14 @@ console = Console()
 def _log_trigger_zone(sheet_reader: GoogleSheetReader, trigger_plan: dict, screenshot_path: str, event_type: str) -> None:
     try:
         sheet_reader.append_trigger_plan_log(trigger_plan, screenshot_path=screenshot_path, event_type=event_type)
-    except Exception as exc:  # noqa: BLE001 - logging should not stop live run
+    except Exception as exc:
         console.print(f"[yellow][sheet-log] Could not write Trigger_Zones: {exc}[/yellow]")
 
 
 def _log_watch_commentary(sheet_reader: GoogleSheetReader, action: str, reason: str, trigger_type: str, call_rows_count: int, put_rows_count: int) -> None:
     try:
         sheet_reader.append_watch_log(action, reason, trigger_type=trigger_type, call_rows_count=call_rows_count, put_rows_count=put_rows_count)
-    except Exception as exc:  # noqa: BLE001 - logging should not stop live run
+    except Exception as exc:
         console.print(f"[yellow][sheet-log] Could not write Watch_Log: {exc}[/yellow]")
 
 
@@ -48,7 +49,7 @@ async def run_live(args: argparse.Namespace) -> None:
     db = Database(settings.database_path)
     client = LLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key)
     trigger_creator = VisionTriggerCreator(client)
-    battle_analyzer = BattleAnalyzer(client)
+    battle_analyzer = BattleAnalyzerV2(client)
     sheet_reader = GoogleSheetReader(settings.google_sheet_id, settings.google_service_account_file, settings.call_sheet_tab, settings.put_sheet_tab)
     capture = ChartCapture(settings.output_dir)
     alert_manager = AlertManager(settings.alert_mode, settings.telegram_bot_token, settings.telegram_chat_id, settings.email_alert_to)
@@ -66,7 +67,7 @@ async def run_live(args: argparse.Namespace) -> None:
         trigger_plan_id = db.save_trigger_plan(initial_screenshot, trigger_plan)
         _log_trigger_zone(sheet_reader, trigger_plan, initial_screenshot, "INITIAL_LLM_BATTLE_ZONE")
         watcher = TriggerWatcher(trigger_plan, max_age_seconds=max(120, settings.screenshot_interval_seconds * 10))
-        console.print("[green]LLM trigger plan saved. Watch loop started.[/green]")
+        console.print("[green]LLM trigger plan saved and written to Google Sheet. Watch loop started.[/green]")
 
         while True:
             call_rows, put_rows = sheet_reader.read_recent(limit=80)
@@ -78,26 +79,36 @@ async def run_live(args: argparse.Namespace) -> None:
             if watch_result.action == "START_BATTLE":
                 trigger_touch_response = {
                     "battle_status": "TRIGGER_TOUCHED",
-                    "decision": "START_BATTLE",
+                    "decision": "FIGHTING_STARTED",
+                    "battle_phase": "FIGHTING_STARTED",
+                    "user_commentary": "FIGHTING STARTED: price touched the LLM battle zone. Now LLM will check holding time, rejection, support break, volume imbalance, velocity after failure, and power transfer.",
+                    "entry_exit_action": "FIGHTING_STARTED",
                     "trigger_type": watch_result.trigger_type,
                     "winner": "NONE",
+                    "weak_side": "UNKNOWN",
+                    "strong_side": "UNKNOWN",
+                    "heavy_side": "UNKNOWN",
                     "trade_grade": "WATCH_ONLY",
                     "confidence": "WATCH",
                     "reason": watch_result.reason,
                     "next_action_for_python": "CALL_LLM_BATTLE_ANALYZER",
+                    "war_grading": {
+                        "overall_grade": "UNCLEAR",
+                        "trade_grade": "WATCH_ONLY",
+                        "grade_confidence": "WATCH",
+                        "grade_direction": "NONE",
+                        "battle_phase": "FIGHTING_STARTED",
+                        "missing_confirmations": ["Need LLM battle scan for rejection, support break, volume imbalance, velocity after failure"],
+                        "danger_signals": [],
+                        "factor_grades": [],
+                    },
                 }
                 try:
-                    sheet_reader.append_battle_log(
-                        trigger_touch_response,
-                        event_type="TRIGGER_TOUCHED",
-                        screenshot_path="",
-                        trigger_type=watch_result.trigger_type,
-                        cycle="",
-                        telegram_mode=settings.alert_mode,
-                    )
-                except Exception as exc:  # noqa: BLE001 - logging should not stop battle start
-                    console.print(f"[yellow][sheet-log] Could not write trigger touch: {exc}[/yellow]")
+                    sheet_reader.append_battle_log(trigger_touch_response, event_type="FIGHTING_STARTED", screenshot_path="", trigger_type=watch_result.trigger_type, cycle="", telegram_mode=settings.alert_mode)
+                except Exception as exc:
+                    console.print(f"[yellow][sheet-log] Could not write fighting start: {exc}[/yellow]")
                 alert_manager.send_battle_update(trigger_touch_response)
+
                 loop = BattleLoop(db, battle_analyzer, capture, sheet_reader, settings.battle_loop_seconds, alert_manager)
                 result = await loop.run(page, trigger_plan_id, trigger_plan, watch_result.trigger_type, max_cycles=args.max_battle_cycles)
                 console.print(f"LLM battle result: {result.get('decision')} | {result.get('battle_status')}")
@@ -120,7 +131,7 @@ async def run_live(args: argparse.Namespace) -> None:
                 trigger_plan_id = db.save_trigger_plan(new_screenshot, trigger_plan)
                 _log_trigger_zone(sheet_reader, trigger_plan, new_screenshot, "NEW_LLM_BATTLE_ZONE")
                 watcher.update_plan(trigger_plan)
-                console.print("[green]New LLM trigger plan saved.[/green]")
+                console.print("[green]New LLM trigger plan saved and written to Google Sheet.[/green]")
             else:
                 await asyncio.sleep(settings.screenshot_interval_seconds)
     finally:
@@ -157,7 +168,7 @@ def test_db() -> None:
 def test_alert() -> None:
     settings = load_settings()
     alerts = AlertManager(settings.alert_mode, settings.telegram_bot_token, settings.telegram_chat_id, settings.email_alert_to)
-    alerts.send_battle_update({"battle_status": "ACTIVE", "decision": "CONTINUE_ANALYZING", "winner": "NONE", "trade_grade": "WATCH_ONLY", "confidence": "LOW", "reason": "Test alert only.", "next_action_for_python": "KEEP_WATCHING", "war_grading": {"missing_confirmations": ["test missing item"]}})
+    alerts.send_battle_update({"battle_status": "TRIGGER_TOUCHED", "decision": "FIGHTING_STARTED", "battle_phase": "FIGHTING_STARTED", "user_commentary": "FIGHTING STARTED test alert.", "winner": "NONE", "trade_grade": "WATCH_ONLY", "confidence": "WATCH", "reason": "Test alert only.", "next_action_for_python": "CALL_LLM_BATTLE_ANALYZER", "war_grading": {"missing_confirmations": ["test missing item"]}})
 
 
 def test_strict() -> None:
