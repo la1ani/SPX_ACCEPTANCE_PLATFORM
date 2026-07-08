@@ -9,18 +9,22 @@ from llm.battle_analyzer import BattleAnalyzer
 from playwright_engine.chart_capture import ChartCapture
 from sheets.google_sheet_reader import GoogleSheetReader
 from storage.database import Database
-from watcher.alert_intelligence import build_rule_commentary, get_alert_level, get_battle_phase, get_entry_exit_action, get_war_grading
+from watcher.alert_intelligence import build_rule_commentary, get_alert_level, get_battle_phase, get_entry_exit_action, get_war_grading, get_winner_grading
 
 
 COMMENTARY_HEADERS = [
     "timestamp", "cycle", "battle_phase", "alert_level", "entry_exit_action", "decision",
-    "heavy_side", "weak_side", "winner", "trade_grade", "confidence", "user_commentary",
-    "rule_commentary", "missing_confirmations", "danger_signals", "screenshot_path",
+    "current_winner", "winner_power_grade", "winner_power_score", "power_status", "trade_size_suggestion",
+    "heavy_side", "weak_side", "winner", "trade_grade", "confidence", "support_break_grade",
+    "rejection_grade", "holding_time_grade", "volume_imbalance_grade", "velocity_after_failure_grade",
+    "power_transfer_grade", "user_commentary", "rule_commentary", "why_not_a_plus", "upgrade_to_a_plus",
+    "downgrade_warning", "missing_confirmations", "danger_signals", "screenshot_path",
 ]
 
 ENTRY_EXIT_HEADERS = [
-    "timestamp", "cycle", "entry_exit_action", "side", "trade_grade", "confidence",
-    "entry_reason", "exit_reason", "decision", "battle_phase", "winner", "reason", "screenshot_path",
+    "timestamp", "cycle", "entry_exit_action", "side", "winner_power_grade", "winner_power_score",
+    "trade_grade", "confidence", "entry_reason", "exit_reason", "decision", "battle_phase",
+    "winner", "winner_explanation", "reason", "screenshot_path",
 ]
 
 
@@ -40,6 +44,7 @@ class BattleLoop:
 
     def _append_readable_sheet_logs(self, response: dict[str, Any], cycle: int, screenshot_path: str) -> None:
         grading = get_war_grading(response)
+        winner_grading = get_winner_grading(response)
         phase = get_battle_phase(response)
         entry_action = response.get("entry_exit_action") or get_entry_exit_action(response)
         commentary = response.get("user_commentary") or ""
@@ -52,9 +57,36 @@ class BattleLoop:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         commentary_row = [
-            timestamp, cycle, phase, get_alert_level(response), entry_action, response.get("decision", ""),
-            heavy, weak, winner, grade_value, confidence, commentary, rule_commentary,
-            self._join(grading.get("missing_confirmations")), self._join(grading.get("danger_signals")), screenshot_path,
+            timestamp,
+            cycle,
+            phase,
+            get_alert_level(response),
+            entry_action,
+            response.get("decision", ""),
+            winner_grading.get("current_winner", ""),
+            winner_grading.get("winner_power_grade", ""),
+            winner_grading.get("winner_power_score", ""),
+            winner_grading.get("power_status", ""),
+            winner_grading.get("trade_size_suggestion", ""),
+            heavy,
+            weak,
+            winner,
+            grade_value,
+            confidence,
+            winner_grading.get("support_break_grade", ""),
+            winner_grading.get("rejection_grade", ""),
+            winner_grading.get("holding_time_grade", ""),
+            winner_grading.get("volume_imbalance_grade", ""),
+            winner_grading.get("velocity_after_failure_grade", ""),
+            winner_grading.get("power_transfer_grade", ""),
+            commentary,
+            rule_commentary,
+            winner_grading.get("why_not_a_plus", ""),
+            winner_grading.get("upgrade_to_a_plus", ""),
+            winner_grading.get("downgrade_warning", ""),
+            self._join(grading.get("missing_confirmations")),
+            self._join(grading.get("danger_signals")),
+            screenshot_path,
         ]
         try:
             ws = self.sheet_reader._get_or_create_worksheet("Battle_Commentary", COMMENTARY_HEADERS, rows=10000)
@@ -63,11 +95,24 @@ class BattleLoop:
             print(f"[sheet-log] Could not write Battle_Commentary: {exc}")
 
         if entry_action in {"FIGHTING_STARTED", "ENTER_CALL", "ENTER_PUT", "ENTRY_ALERT", "SINGLE_WATCH", "EXIT", "EXIT_ALERT", "FLIP_WATCH", "NO_TRADE"}:
-            side = winner if winner in {"CALL", "PUT"} else heavy
+            side = winner_grading.get("current_winner") or winner if winner in {"CALL", "PUT"} else heavy
             entry_exit_row = [
-                timestamp, cycle, entry_action, side, grade_value, confidence,
-                response.get("entry_reason", ""), response.get("exit_reason", ""), response.get("decision", ""),
-                phase, winner, response.get("reason", ""), screenshot_path,
+                timestamp,
+                cycle,
+                entry_action,
+                side,
+                winner_grading.get("winner_power_grade", ""),
+                winner_grading.get("winner_power_score", ""),
+                grade_value,
+                confidence,
+                response.get("entry_reason", ""),
+                response.get("exit_reason", ""),
+                response.get("decision", ""),
+                phase,
+                winner,
+                winner_grading.get("winner_explanation", ""),
+                response.get("reason", ""),
+                screenshot_path,
             ]
             try:
                 ws = self.sheet_reader._get_or_create_worksheet("Entry_Exit_Log", ENTRY_EXIT_HEADERS, rows=10000)
@@ -102,8 +147,8 @@ class BattleLoop:
             except Exception as exc:
                 print(f"[sheet-log] Could not write AI_Log / Alert_Log / Auto_Check / Best_Alerts: {exc}")
             self._append_readable_sheet_logs(latest_response, cycle, latest_screenshot)
-            memory.append({"cycle": cycle, "decision": latest_response.get("decision"), "status": latest_response.get("battle_status"), "message": latest_response.get("memory_update", ""), "reason": latest_response.get("reason", ""), "commentary": latest_response.get("user_commentary", "")})
-            grade_history.append(latest_response.get("war_grading", {}))
+            memory.append({"cycle": cycle, "decision": latest_response.get("decision"), "status": latest_response.get("battle_status"), "message": latest_response.get("memory_update", ""), "reason": latest_response.get("reason", ""), "commentary": latest_response.get("user_commentary", ""), "winner_grading": latest_response.get("battle_winner_grading", {})})
+            grade_history.append({"war_grading": latest_response.get("war_grading", {}), "battle_winner_grading": latest_response.get("battle_winner_grading", {})})
             if self.alert_manager:
                 self.alert_manager.send_battle_update(latest_response)
             status = str(latest_response.get("battle_status", "ACTIVE")).upper()
