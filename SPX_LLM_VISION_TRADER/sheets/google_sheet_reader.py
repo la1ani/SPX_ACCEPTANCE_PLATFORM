@@ -57,7 +57,6 @@ WATCH_LOG_HEADERS = [
     "timestamp",
     "watch_action",
     "trigger_type",
-    "reason",
     "data_status",
     "latest_call_price",
     "latest_put_price",
@@ -65,6 +64,7 @@ WATCH_LOG_HEADERS = [
     "put_source",
     "call_rows_count",
     "put_rows_count",
+    "reason",
     "commentary",
 ]
 
@@ -261,6 +261,23 @@ class GoogleSheetReader:
             worksheet.update("A1", [headers], value_input_option="USER_ENTERED")
         return worksheet
 
+    def _reset_worksheet(self, tab_name: str, headers: list[str], rows: int = 1000):
+        worksheet = self._get_or_create_worksheet(tab_name, headers, rows=rows)
+        try:
+            worksheet.clear()
+        except Exception:
+            pass
+        worksheet.update("A1", [headers], value_input_option="USER_ENTERED")
+        try:
+            worksheet.freeze(rows=1)
+        except Exception:
+            pass
+        return worksheet
+
+    def reset_watch_log(self) -> None:
+        """Clear the clumsy/misaligned Watch_Log and rebuild it with clean headers."""
+        self._reset_worksheet("Watch_Log", WATCH_LOG_HEADERS, rows=10000)
+
     def _json_text(self, value: Any) -> str:
         if value in (None, ""):
             return ""
@@ -395,7 +412,6 @@ class GoogleSheetReader:
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             action,
             trigger_type,
-            reason,
             data_status,
             latest_call_price,
             latest_put_price,
@@ -403,6 +419,7 @@ class GoogleSheetReader:
             put_source,
             call_rows_count,
             put_rows_count,
+            reason,
             f"Watch action: {action} | {reason}",
         ]
         watch_log = self._get_or_create_worksheet("Watch_Log", WATCH_LOG_HEADERS, rows=10000)
