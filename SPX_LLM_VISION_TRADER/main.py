@@ -33,6 +33,14 @@ def _log_trigger_zone(sheet_reader: GoogleSheetReader, trigger_plan: dict, scree
         console.print(f"[yellow][sheet-log] Could not write Trigger_Zones: {exc}[/yellow]")
 
 
+def _clean_watch_log(sheet_reader: GoogleSheetReader) -> None:
+    try:
+        sheet_reader.reset_watch_log()
+        console.print("[green]Watch_Log cleaned and rebuilt with proper headings.[/green]")
+    except Exception as exc:
+        console.print(f"[yellow][sheet-log] Could not clean Watch_Log: {exc}[/yellow]")
+
+
 def _log_watch_commentary(
     sheet_reader: GoogleSheetReader,
     watch_result: WatchResult,
@@ -82,6 +90,7 @@ async def run_live(args: argparse.Namespace) -> None:
     page = await session.start()
     try:
         console.print("[green]TradingView opened. Log in manually if needed.[/green]")
+        _clean_watch_log(sheet_reader)
         initial_screenshot = await capture.capture(page, prefix="initial")
         console.print(f"Initial screenshot saved: {initial_screenshot}")
 
