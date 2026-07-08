@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from watcher.alert_intelligence import build_rule_commentary, get_alert_level, get_battle_phase, get_entry_exit_action, get_war_grading, get_winner_grading
+
 
 class AlertManager:
     def __init__(self, mode: str = "terminal", telegram_bot_token: str = "", telegram_chat_id: str = "", email_to: str = ""):
@@ -11,19 +13,43 @@ class AlertManager:
         self.email_to = email_to
 
     def _format(self, response: dict[str, Any]) -> str:
-        grading = response.get("war_grading") or {}
-        tg_key = "trade" + "_grade"
-        win_key = "win" + "ner"
+        grading = get_war_grading(response)
+        winner_grading = get_winner_grading(response)
+        phase = get_battle_phase(response)
+        entry_action = response.get("entry_exit_action") or get_entry_exit_action(response)
+        grade_value = grading.get("trade_grade") or response.get("trade_grade") or "WATCH_ONLY"
+        confidence = response.get("confidence") or grading.get("grade_confidence") or "LOW"
+        commentary = response.get("user_commentary") or build_rule_commentary(response)
         return (
-            "SPX Battle Update\n"
-            f"Status: {response.get('battle_status')}\n"
+            "SPX BATTLE ALERT\n"
+            f"Alert Level: {get_alert_level(response)}\n"
+            f"Phase: {phase}\n"
+            f"Action: {entry_action}\n"
+            f"Current Winner: {winner_grading.get('current_winner')}\n"
+            f"Winner Power Grade: {winner_grading.get('winner_power_grade')} / Score: {winner_grading.get('winner_power_score')}\n"
+            f"Power Status: {winner_grading.get('power_status')}\n"
+            f"Trade Size Suggestion: {winner_grading.get('trade_size_suggestion') or grade_value}\n"
             f"Decision: {response.get('decision')}\n"
-            f"Possible Result: {response.get(win_key)}\n"
-            f"Trade Size Grade: {grading.get(tg_key, response.get(tg_key))}\n"
-            f"Confidence: {response.get('confidence', grading.get('grade_confidence'))}\n"
+            f"Heavy/Strong Side: {response.get('heavy_side') or response.get('strong_side')}\n"
+            f"Weak Side: {response.get('weak_side')}\n"
+            f"Winner: {response.get('winner')}\n"
+            f"Trade Grade: {grade_value}\n"
+            f"Confidence: {confidence}\n"
+            f"Support Break Grade: {winner_grading.get('support_break_grade')}\n"
+            f"Rejection Grade: {winner_grading.get('rejection_grade')}\n"
+            f"Holding Time Grade: {winner_grading.get('holding_time_grade')}\n"
+            f"Volume Imbalance Grade: {winner_grading.get('volume_imbalance_grade')}\n"
+            f"Velocity After Failure Grade: {winner_grading.get('velocity_after_failure_grade')}\n"
+            f"Power Transfer Grade: {winner_grading.get('power_transfer_grade')}\n"
+            f"Why Not A+: {winner_grading.get('why_not_a_plus')}\n"
+            f"Upgrade To A+: {winner_grading.get('upgrade_to_a_plus')}\n"
+            f"Downgrade Warning: {winner_grading.get('downgrade_warning')}\n"
+            f"Entry Reason: {response.get('entry_reason', '')}\n"
+            f"Exit Reason: {response.get('exit_reason', '')}\n"
             f"Missing: {', '.join(grading.get('missing_confirmations', []) or [])}\n"
+            f"Danger: {', '.join(grading.get('danger_signals', []) or [])}\n"
             f"Next: {response.get('next_action_for_python')}\n"
-            f"Reason: {response.get('reason')}"
+            f"Commentary:\n{commentary}"
         )
 
     def send_battle_update(self, response: dict[str, Any]) -> None:
@@ -51,7 +77,7 @@ class AlertManager:
         try:
             import requests
             url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
-            requests.post(url, json={"chat_id": self.telegram_chat_id, "text": text}, timeout=10)
+            requests.post(url, json={"chat_id": self.telegram_chat_id, "text": text[:3900]}, timeout=10)
         except Exception as exc:
             print(f"[alert] Telegram failed: {exc}")
             print(text)
