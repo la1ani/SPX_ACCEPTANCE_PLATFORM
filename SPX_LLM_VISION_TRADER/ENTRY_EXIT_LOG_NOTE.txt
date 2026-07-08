@@ -1,0 +1,1 @@
+Entry_Exit_Log now records FIGHTING_STARTED, ENTRY_ALERT, SINGLE_WATCH, EXIT_ALERT, FLIP_WATCH, NO_TRADE, side, grade, confidence, entry reason, exit reason, decision, battle phase, winner, reason, and screenshot path.
