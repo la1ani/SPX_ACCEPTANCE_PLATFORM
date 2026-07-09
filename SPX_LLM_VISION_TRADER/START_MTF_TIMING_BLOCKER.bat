@@ -7,7 +7,7 @@ set "ROOT_DIR=C:\SPX_ACCEPTANCE_PLATFORM"
 set "PROJECT_DIR=C:\SPX_ACCEPTANCE_PLATFORM\SPX_LLM_VISION_TRADER"
 set "PYTHON_EXE=.venv\Scripts\python.exe"
 set "MAIN_FILE=mtf_timing_blocker_main.py"
-set "LOOP_SECONDS=15"
+set "LOOP_SECONDS=30"
 
 echo ============================================================
 echo  SPX MTF TIMING BLOCKER - ONE CLICK START
@@ -33,7 +33,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [1/5] Updating code from GitHub...
+echo [1/4] Updating code from GitHub...
 git pull
 echo.
 
@@ -47,8 +47,6 @@ if errorlevel 1 (
 if not exist "%MAIN_FILE%" (
   echo ERROR: %MAIN_FILE% not found in:
   echo %PROJECT_DIR%
-  echo.
-  echo Git pull completed, but this file is missing.
   pause
   exit /b 1
 )
@@ -60,7 +58,7 @@ if not exist ".env" (
   exit /b 1
 )
 
-echo [2/5] Checking Python virtual environment...
+echo [2/4] Checking Python virtual environment...
 if not exist "%PYTHON_EXE%" (
   echo .venv missing. Creating it now...
   python -m venv .venv
@@ -71,7 +69,7 @@ if not exist "%PYTHON_EXE%" (
   )
 )
 
-echo [3/5] Installing/updating requirements...
+echo [3/4] Installing/updating requirements...
 "%PYTHON_EXE%" -m pip install --upgrade pip
 "%PYTHON_EXE%" -m pip install -r requirements.txt
 if errorlevel 1 (
@@ -81,20 +79,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo [4/5] Fast one-row test...
-"%PYTHON_EXE%" "%MAIN_FILE%"
-if errorlevel 1 (
-  echo.
-  echo ERROR: One-row test failed.
-  echo Check .env and GOOGLE_SERVICE_ACCOUNT_FILE.
-  echo Example:
-  echo GOOGLE_SERVICE_ACCOUNT_FILE=service_account.json
-  pause
-  exit /b 1
-)
-
-echo.
-echo [5/5] Starting live MTF loop every %LOOP_SECONDS% seconds...
+echo [4/4] Starting live MTF loop every %LOOP_SECONDS% seconds...
+echo Fast one-row test skipped to avoid Google Sheets quota.
 echo.
 echo Watch this Google Sheet tab live:
 echo   MTF_Current_Blocker
