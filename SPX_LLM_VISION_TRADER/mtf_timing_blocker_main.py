@@ -40,9 +40,8 @@ def build_engine_config() -> EngineConfig:
     )
 
 
-def run_once(args: argparse.Namespace) -> None:
+def build_sheet_io(args: argparse.Namespace) -> tuple[MTFSheetIO, int]:
     settings = load_settings(args.env_file)
-
     sheet_id = (
         args.sheet_id
         or os.getenv("MTF_GOOGLE_SHEET_ID", "").strip()
@@ -52,7 +51,7 @@ def run_once(args: argparse.Namespace) -> None:
     call_tab = args.call_tab or os.getenv("MTF_CALL_TAB", "calls").strip() or "calls"
     put_tab = args.put_tab or os.getenv("MTF_PUT_TAB", "puts").strip() or "puts"
     manual_tab = args.manual_tab or os.getenv("MTF_MANUAL_TAB", "Manual_Signal_Input").strip() or "Manual_Signal_Input"
-    lookback_rows = args.lookback_rows or _int_env("MTF_LOOKBACK_ROWS", 500)
+    lookback_rows = args.lookback_rows or _int_env("MTF_LOOKBACK_ROWS", 200)
 
     sheet_io = MTFSheetIO(
         sheet_id=sheet_id,
@@ -62,6 +61,12 @@ def run_once(args: argparse.Namespace) -> None:
         manual_tab=manual_tab,
     )
     sheet_io.ensure_output_tabs()
+    return sheet_io, lookback_rows
+
+
+def run_once(args: argparse.Namespace, sheet_io: MTFSheetIO | None = None, lookback_rows: int | None = None) -> None:
+    if sheet_io is None or lookback_rows is None:
+        sheet_io, lookback_rows = build_sheet_io(args)
 
     state_json = sheet_io.read_engine_state_json()
     state = EngineState.from_json(state_json)
@@ -94,9 +99,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--call-tab", default="", help="Calls tab name. Default: calls")
     parser.add_argument("--put-tab", default="", help="Puts tab name. Default: puts")
     parser.add_argument("--manual-tab", default="", help="Manual signal tab name. Default: Manual_Signal_Input")
-    parser.add_argument("--lookback-rows", type=int, default=0, help="Rows to read from each input tab. Default: MTF_LOOKBACK_ROWS or 500.")
+    parser.add_argument("--lookback-rows", type=int, default=0, help="Rows to read from each input tab. Default: MTF_LOOKBACK_ROWS or 200.")
     parser.add_argument("--loop", action="store_true", help="Run continuously.")
-    parser.add_argument("--seconds", type=int, default=0, help="Loop interval seconds. Default: MTF_LOOP_SECONDS or 15.")
+    parser.add_argument("--seconds", type=int, default=0, help="Loop interval seconds. Default: MTF_LOOP_SECONDS or 30.")
     return parser.parse_args(argv)
 
 
@@ -106,11 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         run_once(args)
         return 0
 
-    seconds = args.seconds or _int_env("MTF_LOOP_SECONDS", 15)
+    seconds = args.seconds or _int_env("MTF_LOOP_SECONDS", 30)
+    sheet_io, lookback_rows = build_sheet_io(args)
     print(f"MTF Timing Blocker running every {seconds} seconds. Press Ctrl+C to stop.")
     while True:
         try:
-            run_once(args)
+            run_once(args, sheet_io=sheet_io, lookback_rows=lookback_rows)
         except KeyboardInterrupt:
             print("Stopped.")
             return 0
