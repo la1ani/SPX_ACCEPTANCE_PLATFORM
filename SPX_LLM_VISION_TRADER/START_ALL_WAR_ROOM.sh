@@ -128,4 +128,4 @@ echo "  Battle engine and MTF timing blocker remain separate decision systems."
 echo "  This script starts both; neither overrides the other."
 echo ""
 echo "Public VPS IP: $(curl -4 -s --max-time 5 ifconfig.me || echo NOT_AVAILABLE)"
-echo "============================================="n
+echo "============================================="
