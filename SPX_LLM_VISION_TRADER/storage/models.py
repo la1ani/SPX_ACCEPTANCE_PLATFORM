@@ -24,6 +24,50 @@ def stringify_llm_value(value: Any, default: str = "") -> str:
     return str(value)
 
 
+def coerce_llm_bool(value: Any) -> bool:
+    """Coerce flexible LLM confirmation outputs without creating trading logic.
+
+    The LLM sometimes returns graded words such as MILD, MODERATE, or STRONG
+    for fields whose storage schema is boolean. This function only normalizes
+    response shape so Pydantic validation does not crash the live battle loop.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, dict):
+        for key in ("confirmed", "present", "exists", "value", "status"):
+            if key in value:
+                return coerce_llm_bool(value[key])
+        return bool(value)
+    if isinstance(value, list):
+        return any(coerce_llm_bool(v) for v in value)
+
+    text = str(value).strip().upper()
+    false_values = {
+        "", "0", "FALSE", "NO", "NONE", "NULL", "N/A", "NA",
+        "ABSENT", "NOT_PRESENT", "NOT CONFIRMED", "UNCONFIRMED",
+        "UNCLEAR", "UNKNOWN", "NEGATIVE", "FAILED", "FAIL",
+    }
+    true_values = {
+        "1", "TRUE", "YES", "Y", "PRESENT", "CONFIRMED", "POSITIVE",
+        "MILD", "WEAK", "MODERATE", "MEDIUM", "STRONG", "HIGH",
+        "VERY_STRONG", "VERY STRONG", "PARTIAL", "DEVELOPING",
+    }
+    if text in false_values:
+        return False
+    if text in true_values:
+        return True
+
+    if any(token in text for token in ("NO ", "NOT ", "ABSENT", "UNCONFIRMED", "FAILED")):
+        return False
+    if any(token in text for token in ("CONFIRMED", "PRESENT", "MILD", "MODERATE", "STRONG", "PARTIAL", "DEVELOPING")):
+        return True
+    return False
+
+
 class Zone(BaseModel):
     model_config = ConfigDict(extra="allow")
     exists: bool = False
@@ -219,6 +263,18 @@ class BattleDecision(BaseModel):
     @classmethod
     def _coerce_decision_strings(cls, value: Any) -> str:
         return stringify_llm_value(value)
+
+    @field_validator(
+        "rejection_confirmed",
+        "weak_side_support_broken",
+        "opposite_side_holding_support",
+        "opposite_side_volume_imbalance",
+        "velocity_after_failure",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_confirmation_bools(cls, value: Any) -> bool:
+        return coerce_llm_bool(value)
 
 
 class SheetSnapshot(BaseModel):
