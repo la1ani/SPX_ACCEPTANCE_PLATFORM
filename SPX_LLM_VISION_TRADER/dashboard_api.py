@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,12 +12,17 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import load_settings
+from mtf_timing_blocker.google_sheet_io import MTFSheetIO
 
 
 app = FastAPI(
     title="SPX War Room Dashboard API",
-    description="Read-only API exposing the latest SPX battle state for dashboard clients such as Base44.",
-    version="1.0.0",
+    description=(
+        "Read-only API exposing two separate decision systems: "
+        "the LLM battle engine and the Python MTF timing blocker. "
+        "Neither decision system modifies or overrides the other."
+    ),
+    version="1.1.0",
 )
 
 # Base44 or another dashboard can call this API from a browser.
@@ -34,6 +40,12 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+
+_MTF_CACHE: dict[str, Any] = {
+    "loaded_at_monotonic": 0.0,
+    "payload": None,
+}
 
 
 def _database_path() -> Path:
@@ -61,6 +73,10 @@ def _json_load(value: Any, default: Any) -> Any:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _first_record(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return records[0] if records else {}
 
 
 def _latest_observation(conn: sqlite3.Connection) -> dict[str, Any] | None:
@@ -137,6 +153,152 @@ def _extract_prices(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _mtf_empty_payload(status: str = "NO_DATA", error: str = "") -> dict[str, Any]:
+    return {
+        "system": "PYTHON_MTF_TIMING_BLOCKER",
+        "independent_from_battle": True,
+        "status": status,
+        "error": error,
+        "timestamp": None,
+        "source": None,
+        "contracts": {
+            "call_symbol": None,
+            "put_symbol": None,
+        },
+        "candidate_side": None,
+        "signals": {
+            "call": {"15s": None, "30s": None, "1m": None, "3m": None, "5m": None},
+            "put": {"15s": None, "30s": None, "1m": None, "3m": None, "5m": None},
+        },
+        "decision": {
+            "blocking_status": "NO_DATA",
+            "trade_status": "NO_DATA",
+            "grade": "UNCLEAR",
+            "action": "WAIT",
+            "reason": error or "No MTF timing-blocker state is available yet.",
+            "entry_allowed": False,
+        },
+        "timing_evidence": {
+            "fast_flip": None,
+            "rejection_status": None,
+            "recovery_status": None,
+            "velocity_status": None,
+            "volume_status": None,
+            "body_stack_status": None,
+            "opposite_bleeding": None,
+            "price_level_status": None,
+            "event_type": None,
+        },
+        "latest_state": [],
+    }
+
+
+def _mtf_entry_allowed(trade_status: str, action: str, blocking_status: str) -> bool:
+    if str(blocking_status or "").upper().startswith("BLOCKED"):
+        return False
+    return str(trade_status or "").upper() in {"READY_TO_TRADE", "GOOD_TIMING_FULL_HAND"} or str(action or "").upper() in {"LIGHT_HAND", "FULL_HAND"}
+
+
+def _build_mtf_payload(force_refresh: bool = False) -> dict[str, Any]:
+    """Read the Python MTF blocker output without merging it into battle logic.
+
+    This reads only the MTF output tabs already written by mtf_timing_blocker_main.py.
+    It never changes battle winner, battle grade, battle action, or battle entry/exit logic.
+    """
+    cache_seconds = max(1, int(os.getenv("DASHBOARD_MTF_CACHE_SECONDS", "10")))
+    age = time.monotonic() - float(_MTF_CACHE.get("loaded_at_monotonic") or 0.0)
+    cached = _MTF_CACHE.get("payload")
+    if not force_refresh and cached is not None and age < cache_seconds:
+        return cached
+
+    settings = load_settings()
+    sheet_id = os.getenv("MTF_GOOGLE_SHEET_ID", "").strip() or settings.google_sheet_id
+    service_account_file = settings.google_service_account_file
+
+    if not sheet_id:
+        payload = _mtf_empty_payload("CONFIG_MISSING", "MTF_GOOGLE_SHEET_ID / GOOGLE_SHEET_ID is missing.")
+        _MTF_CACHE.update({"loaded_at_monotonic": time.monotonic(), "payload": payload})
+        return payload
+
+    if not service_account_file:
+        payload = _mtf_empty_payload("CONFIG_MISSING", "GOOGLE_SERVICE_ACCOUNT_FILE is missing.")
+        _MTF_CACHE.update({"loaded_at_monotonic": time.monotonic(), "payload": payload})
+        return payload
+
+    try:
+        io = MTFSheetIO(
+            sheet_id=sheet_id,
+            service_account_file=service_account_file,
+            call_tab=os.getenv("MTF_CALL_TAB", settings.call_sheet_tab),
+            put_tab=os.getenv("MTF_PUT_TAB", settings.put_sheet_tab),
+            manual_tab=os.getenv("MTF_MANUAL_TAB", "Manual_Signal_Input"),
+        )
+        blocker_records = io._api_retry(io._worksheet("MTF_Current_Blocker").get_all_records)
+        latest_state_records = io._api_retry(io._worksheet("MTF_Latest_State").get_all_records)
+        row = _first_record(blocker_records)
+
+        if not row:
+            payload = _mtf_empty_payload("NO_DATA")
+        else:
+            blocking_status = str(row.get("Blocking Status", "") or "")
+            trade_status = str(row.get("Trade Status", "") or "")
+            action = str(row.get("Action", "") or "")
+            payload = {
+                "system": "PYTHON_MTF_TIMING_BLOCKER",
+                "independent_from_battle": True,
+                "status": "OK",
+                "error": "",
+                "timestamp": row.get("Date Time") or None,
+                "source": row.get("Source") or None,
+                "contracts": {
+                    "call_symbol": row.get("CALL Symbol") or None,
+                    "put_symbol": row.get("PUT Symbol") or None,
+                },
+                "candidate_side": row.get("Candidate Side") or None,
+                "signals": {
+                    "call": {
+                        "15s": row.get("CALL 15s") or None,
+                        "30s": row.get("CALL 30s") or None,
+                        "1m": row.get("CALL 1m") or None,
+                        "3m": row.get("CALL 3m") or None,
+                        "5m": row.get("CALL 5m") or None,
+                    },
+                    "put": {
+                        "15s": row.get("PUT 15s") or None,
+                        "30s": row.get("PUT 30s") or None,
+                        "1m": row.get("PUT 1m") or None,
+                        "3m": row.get("PUT 3m") or None,
+                        "5m": row.get("PUT 5m") or None,
+                    },
+                },
+                "decision": {
+                    "blocking_status": blocking_status or "UNKNOWN",
+                    "trade_status": trade_status or "UNKNOWN",
+                    "grade": row.get("Grade") or "UNCLEAR",
+                    "action": action or "WAIT",
+                    "reason": row.get("Reason") or "",
+                    "entry_allowed": _mtf_entry_allowed(trade_status, action, blocking_status),
+                },
+                "timing_evidence": {
+                    "fast_flip": row.get("Fast Flip") or None,
+                    "rejection_status": row.get("Rejection Status") or None,
+                    "recovery_status": row.get("Recovery Status") or None,
+                    "velocity_status": row.get("Velocity Status") or None,
+                    "volume_status": row.get("Volume Status") or None,
+                    "body_stack_status": row.get("Body Stack Status") or None,
+                    "opposite_bleeding": row.get("Opposite Bleeding") or None,
+                    "price_level_status": row.get("Price Level Status") or None,
+                    "event_type": row.get("Event Type") or None,
+                },
+                "latest_state": latest_state_records,
+            }
+    except Exception as exc:
+        payload = _mtf_empty_payload("ERROR", str(exc))
+
+    _MTF_CACHE.update({"loaded_at_monotonic": time.monotonic(), "payload": payload})
+    return payload
+
+
 def _build_current_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     observation = _latest_observation(conn)
     trigger = _latest_trigger(conn)
@@ -173,6 +335,11 @@ def _build_current_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "api_status": "OK",
         "generated_at": _utc_now_iso(),
         "system_status": "LIVE" if snapshot else "NO_DATA",
+        "decision_systems": {
+            "battle": "LLM battle engine: independent battle winner/grading/entry-exit analysis.",
+            "mtf_timing": "Python MTF timing blocker: independent signal timing/block/allow decision.",
+            "rule": "Never merge or override one decision with the other. Display both separately.",
+        },
         "battle": {
             "is_active": active_session,
             "phase": battle_phase,
@@ -277,6 +444,9 @@ def _build_current_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             "reason": final_result.get("reason") if final_result else None,
             "timestamp": final_result.get("timestamp") if final_result else None,
         },
+        # This is deliberately a separate top-level decision object.
+        # It does not alter battle.* or winner_power.* in any way.
+        "mtf_timing": _build_mtf_payload(),
     }
 
 
@@ -286,7 +456,9 @@ def root() -> dict[str, Any]:
         "name": "SPX War Room Dashboard API",
         "status": "OK",
         "read_only": True,
+        "version": "1.1.0",
         "current_endpoint": "/api/dashboard/current",
+        "mtf_endpoint": "/api/mtf/current",
         "docs": "/docs",
     }
 
@@ -294,12 +466,22 @@ def root() -> dict[str, Any]:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     path = _database_path()
+    mtf = _build_mtf_payload()
     return {
         "status": "OK" if path.exists() else "DATABASE_MISSING",
         "database_path": str(path),
         "database_exists": path.exists(),
+        "battle_system": "AVAILABLE" if path.exists() else "DATABASE_MISSING",
+        "mtf_timing_system": mtf.get("status", "UNKNOWN"),
+        "mtf_last_update": mtf.get("timestamp"),
         "timestamp": _utc_now_iso(),
     }
+
+
+@app.get("/api/mtf/current")
+def mtf_current(force_refresh: bool = Query(default=False)) -> dict[str, Any]:
+    """Return only the independent Python MTF timing/blocker decision."""
+    return _build_mtf_payload(force_refresh=force_refresh)
 
 
 @app.get("/api/dashboard/current")
