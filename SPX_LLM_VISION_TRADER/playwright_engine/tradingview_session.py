@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import subprocess
 from pathlib import Path
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
 
@@ -16,6 +18,70 @@ class TradingViewSession:
         self.context: BrowserContext | None = None
         self.page: Page | None = None
 
+    def _windows_chrome_candidates(self) -> list[Path]:
+        explicit = os.getenv("CHROME_EXE", "").strip()
+        candidates: list[Path] = []
+        if explicit:
+            candidates.append(Path(explicit))
+        candidates.extend(
+            [
+                Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+                Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+            ]
+        )
+        return candidates
+
+    def _start_debug_chrome_if_needed(self) -> None:
+        if os.name != "nt":
+            return
+
+        profile = os.getenv(
+            "CHROME_DEBUG_PROFILE",
+            r"C:\chrome-debug-profile",
+        ).strip()
+        port = os.getenv("CHROME_DEBUG_PORT", "9222").strip() or "9222"
+
+        for chrome_exe in self._windows_chrome_candidates():
+            if not chrome_exe.exists():
+                continue
+            print(f"Starting Chrome debug session: {chrome_exe}")
+            subprocess.Popen(
+                [
+                    str(chrome_exe),
+                    f"--remote-debugging-port={port}",
+                    f"--user-data-dir={profile}",
+                    "--start-maximized",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+            return
+
+    async def _connect_over_cdp_with_retry(self, cdp_url: str) -> Browser:
+        attempts = int(os.getenv("CDP_CONNECT_ATTEMPTS", "12"))
+        delay_seconds = float(os.getenv("CDP_CONNECT_RETRY_SECONDS", "2"))
+        last_error: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                if attempt > 1:
+                    print(f"Retrying Chrome CDP connection ({attempt}/{attempts})...")
+                return await self._playwright.chromium.connect_over_cdp(cdp_url)  # type: ignore[union-attr]
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt == 1:
+                    print(f"Chrome CDP connection failed once: {exc}")
+                    print("Trying to start/recover the Chrome debug session automatically...")
+                    self._start_debug_chrome_if_needed()
+                if attempt < attempts:
+                    await asyncio.sleep(delay_seconds)
+
+        raise RuntimeError(
+            f"Could not connect to Chrome CDP at {cdp_url} after {attempts} attempts. "
+            f"Last error: {last_error}"
+        ) from last_error
+
     async def start(self) -> Page:
         if not self.tradingview_url:
             raise RuntimeError("TRADINGVIEW_URL is missing in .env")
@@ -29,7 +95,7 @@ class TradingViewSession:
             # already-open Chrome instead of launching an automation browser.
             print(f"Connecting to existing Chrome: {cdp_url}")
             self._using_cdp = True
-            self._browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+            self._browser = await self._connect_over_cdp_with_retry(cdp_url)
             self.context = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
             pages = self.context.pages
             self.page = next((p for p in pages if "tradingview.com" in p.url.lower()), pages[0] if pages else await self.context.new_page())
