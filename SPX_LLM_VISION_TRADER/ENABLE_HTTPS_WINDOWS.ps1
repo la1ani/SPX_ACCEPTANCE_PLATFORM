@@ -8,6 +8,7 @@ $ProjectDir = "C:\SPX_ACCEPTANCE_PLATFORM\SPX_LLM_VISION_TRADER"
 $PythonExe = Join-Path $ProjectDir ".venv\Scripts\python.exe"
 $CaddyDir = Join-Path $ProjectDir "tools\caddy"
 $CaddyExe = Join-Path $CaddyDir "caddy.exe"
+$CaddyDownload = Join-Path $CaddyDir "caddy.download"
 $CaddyZip = Join-Path $CaddyDir "caddy.zip"
 $Caddyfile = Join-Path $CaddyDir "Caddyfile"
 $HostName = (($PublicIp -replace '\.', '-') + ".sslip.io")
@@ -65,15 +66,47 @@ if ($port80) {
     }
 }
 
-# Download Caddy if needed.
+# Download Caddy if needed. The Caddy download endpoint may return either a ZIP archive
+# or the Windows executable directly, so detect the file signature instead of assuming ZIP.
 New-Item -ItemType Directory -Force -Path $CaddyDir | Out-Null
 if (-not (Test-Path $CaddyExe)) {
     Write-Host "Downloading Caddy for Windows..."
-    Invoke-WebRequest `
-        -Uri "https://caddyserver.com/api/download?os=windows&arch=amd64" `
-        -OutFile $CaddyZip
-    Expand-Archive -Path $CaddyZip -DestinationPath $CaddyDir -Force
-    Remove-Item $CaddyZip -Force -ErrorAction SilentlyContinue
+    Remove-Item $CaddyDownload, $CaddyZip -Force -ErrorAction SilentlyContinue
+
+    & curl.exe -L --fail --silent --show-error `
+        "https://caddyserver.com/api/download?os=windows&arch=amd64" `
+        -o $CaddyDownload
+
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $CaddyDownload)) {
+        throw "Caddy download failed."
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($CaddyDownload)
+    if ($bytes.Length -lt 2) {
+        throw "Caddy download was empty or invalid."
+    }
+
+    $isZip = ($bytes[0] -eq 0x50 -and $bytes[1] -eq 0x4B)
+    $isExe = ($bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A)
+
+    if ($isZip) {
+        Move-Item $CaddyDownload $CaddyZip -Force
+        Expand-Archive -Path $CaddyZip -DestinationPath $CaddyDir -Force
+        Remove-Item $CaddyZip -Force -ErrorAction SilentlyContinue
+    } elseif ($isExe) {
+        Move-Item $CaddyDownload $CaddyExe -Force
+    } else {
+        $preview = [System.Text.Encoding]::UTF8.GetString($bytes[0..([Math]::Min(200, $bytes.Length - 1))])
+        throw "Unexpected Caddy download format. First bytes/text: $preview"
+    }
+
+    if (-not (Test-Path $CaddyExe)) {
+        $foundExe = Get-ChildItem -Path $CaddyDir -Filter "caddy.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($foundExe) {
+            Copy-Item $foundExe.FullName $CaddyExe -Force
+        }
+    }
+
     if (-not (Test-Path $CaddyExe)) {
         throw "Caddy download completed but caddy.exe was not found."
     }
