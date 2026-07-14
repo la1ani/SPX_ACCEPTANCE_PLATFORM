@@ -1,0 +1,15 @@
+[Unit]
+Description=SPX no-trade-zone reasoning agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/YOUR_USERNAME/spx_agent_live
+ExecStart=/home/YOUR_USERNAME/spx_agent_live/venv/bin/python run_live.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/YOUR_USERNAME/spx_agent_live/agent.log
+StandardError=append:/home/YOUR_USERNAME/spx_agent_live/agent_error.log
+
+[Install]
+WantedBy=multi-user.target
