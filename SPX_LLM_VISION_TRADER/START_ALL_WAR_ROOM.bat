@@ -8,9 +8,7 @@ set "PROJECT_DIR=C:\SPX_ACCEPTANCE_PLATFORM\SPX_LLM_VISION_TRADER"
 set "PYTHON_EXE=%PROJECT_DIR%\.venv\Scripts\python.exe"
 set "LOG_DIR=%PROJECT_DIR%\outputs"
 set "DASHBOARD_LOG=%LOG_DIR%\dashboard_api.log"
-set "MTF_LOG=%LOG_DIR%\mtf_timing_blocker.log"
-set "BATTLE_LOG=%LOG_DIR%\battle_engine.log"
-set "MTF_SECONDS=15"
+set "EXPANSION_LOG=%LOG_DIR%\opposite_expansion.log"
 set "CHROME_PORT=9222"
 set "CHROME_PROFILE=C:\chrome-debug-profile"
 
@@ -62,12 +60,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [4/9] Stopping old War Room Python processes...
+echo [4/8] Stopping old War Room Python processes...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$targets=@('dashboard_api.py','mtf_timing_blocker_main.py','main.py'); Get-CimInstance Win32_Process | Where-Object { $cl=$_.CommandLine; $cl -and $_.Name -match 'python' -and ($targets | Where-Object { $cl -like ('*'+$_+'*') }) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 timeout /t 2 /nobreak >nul
 
-echo [5/9] Starting Chrome debug mode for TradingView...
+echo [5/8] Starting Chrome debug mode for TradingView...
 set "CHROME_EXE="
 if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" set "CHROME_EXE=C:\Program Files\Google\Chrome\Application\chrome.exe"
 if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" set "CHROME_EXE=C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
@@ -83,19 +81,15 @@ if defined CHROME_EXE (
   echo [WARNING] Google Chrome not found. Battle engine may fail.
 )
 
-echo [6/9] Starting Dashboard API...
+echo [6/8] Starting Dashboard API...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$p=Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('dashboard_api.py') -WorkingDirectory '%PROJECT_DIR%' -RedirectStandardOutput '%DASHBOARD_LOG%' -RedirectStandardError '%DASHBOARD_LOG%.err' -PassThru; $p.Id | Set-Content '%PROJECT_DIR%\.dashboard_api.pid'"
 
-echo [7/9] Starting MTF Timing Blocker every %MTF_SECONDS% seconds...
+echo [7/8] Starting Opposite CALL/PUT Expansion Engine...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$p=Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('mtf_timing_blocker_main.py','--loop','--seconds','%MTF_SECONDS%') -WorkingDirectory '%PROJECT_DIR%' -RedirectStandardOutput '%MTF_LOG%' -RedirectStandardError '%MTF_LOG%.err' -PassThru; $p.Id | Set-Content '%PROJECT_DIR%\.mtf_timing_blocker.pid'"
+  "$p=Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('main.py') -WorkingDirectory '%PROJECT_DIR%' -RedirectStandardOutput '%EXPANSION_LOG%' -RedirectStandardError '%EXPANSION_LOG%.err' -PassThru; $p.Id | Set-Content '%PROJECT_DIR%\.opposite_expansion.pid'"
 
-echo [8/9] Starting LLM Battle Engine...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$p=Start-Process -FilePath '%PYTHON_EXE%' -ArgumentList @('main.py') -WorkingDirectory '%PROJECT_DIR%' -RedirectStandardOutput '%BATTLE_LOG%' -RedirectStandardError '%BATTLE_LOG%.err' -PassThru; $p.Id | Set-Content '%PROJECT_DIR%\.battle_engine.pid'"
-
-echo [9/9] Waiting for services and running checks...
+echo [8/8] Waiting for services and running checks...
 timeout /t 10 /nobreak >nul
 
 echo.
@@ -103,7 +97,7 @@ echo =============================================
 echo SPX WAR ROOM BACKEND START STATUS
 echo =============================================
 
-for %%N in (dashboard_api mtf_timing_blocker battle_engine) do (
+for %%N in (dashboard_api opposite_expansion) do (
   set "PID_FILE=%PROJECT_DIR%\.%%N.pid"
   set "PID_VALUE=NOT_RUNNING"
   if exist "!PID_FILE!" set /p PID_VALUE=<"!PID_FILE!"
@@ -112,8 +106,7 @@ for %%N in (dashboard_api mtf_timing_blocker battle_engine) do (
     if errorlevel 1 set "PID_VALUE=NOT_RUNNING"
   )
   if "%%N"=="dashboard_api" echo Dashboard API PID: !PID_VALUE!
-  if "%%N"=="mtf_timing_blocker" echo MTF Blocker PID:   !PID_VALUE!
-  if "%%N"=="battle_engine" echo Battle Engine PID: !PID_VALUE!
+  if "%%N"=="opposite_expansion" echo Expansion Engine PID: !PID_VALUE!
 )
 echo.
 
@@ -124,11 +117,11 @@ if errorlevel 1 (
   echo [OK] Dashboard API health
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8000/api/mtf/current?force_refresh=true' -TimeoutSec 8; if($r.Content){exit 0}else{exit 1} } catch { exit 1 }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8000/api/expansion/current' -TimeoutSec 8; if($r.Content){exit 0}else{exit 1} } catch { exit 1 }"
 if errorlevel 1 (
-  echo [WARNING] MTF endpoint did not return data
+  echo [WARNING] Expansion endpoint did not return data
 ) else (
-  echo [OK] MTF endpoint responded
+  echo [OK] Expansion endpoint responded
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8000/api/dashboard/current' -TimeoutSec 8; if($r.Content){exit 0}else{exit 1} } catch { exit 1 }"
@@ -140,20 +133,19 @@ if errorlevel 1 (
 
 echo.
 echo Local health:   http://127.0.0.1:8000/api/health
-echo Local MTF API:  http://127.0.0.1:8000/api/mtf/current
+echo Local Expansion API: http://127.0.0.1:8000/api/expansion/current
 echo Local War Room: http://127.0.0.1:8000/api/dashboard/current
 echo.
 echo Logs:
 echo   Dashboard API: %DASHBOARD_LOG%
-echo   MTF blocker:   %MTF_LOG%
-echo   Battle engine: %BATTLE_LOG%
+echo   Expansion engine: %EXPANSION_LOG%
 echo.
 for /f "delims=" %%I in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "try {(Invoke-RestMethod -Uri 'https://api.ipify.org' -TimeoutSec 5)} catch {'NOT_AVAILABLE'}"') do set "PUBLIC_IP=%%I"
 echo Public VPS IP: %PUBLIC_IP%
 echo.
 echo IMPORTANT:
-echo   Battle engine and MTF timing blocker remain separate decision systems.
-echo   This script starts both; neither overrides the other.
+echo   Active decision: CALL/PUT opposite candle-body expansion only.
+echo   Support/resistance, trigger-zone, rejection and MTF blocker logic are disabled.
 echo =============================================
 echo.
 echo If any process shows NOT_RUNNING, open the matching .err log above.
