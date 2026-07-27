@@ -1,242 +1,91 @@
-"""Entry point for SPX_LLM_VISION_TRADER.
+"""Live SPX opposite-expansion watcher.
 
-This program captures evidence, calls the LLM, writes Google Sheet logs, and stores LLM responses.
-Python does not decide the trade. The LLM grades the battle.
+There is no support/resistance or level-based decision logic in this entry
+point. One side expanding only arms a setup. An alert is sent only after the
+other option expands in the opposite direction.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-from rich.console import Console
+import json
+from datetime import datetime
+from pathlib import Path
 
 from alerts.alert_manager import AlertManager
 from config.settings import load_settings
-from llm.battle_analyzer_v2 import BattleAnalyzerV2
+from expansion_engine import OppositeExpansionEngine
+from expansion_vision import extract_candles
 from llm.llm_client import LLMClient
-from llm.vision_trigger_creator import VisionTriggerCreator
 from playwright_engine.chart_capture import ChartCapture
 from playwright_engine.tradingview_session import TradingViewSession
-from sheets.google_sheet_reader import GoogleSheetReader
-from storage.database import Database
-from watcher.battle_loop import BattleLoop
-from watcher.strict_mode import StrictModeScanner
-from watcher.trigger_watcher import TriggerWatcher, WatchResult
-
-console = Console()
 
 
-def _log_trigger_zone(sheet_reader: GoogleSheetReader, trigger_plan: dict, screenshot_path: str, event_type: str) -> None:
-    try:
-        sheet_reader.append_trigger_plan_log(trigger_plan, screenshot_path=screenshot_path, event_type=event_type)
-    except Exception as exc:
-        console.print(f"[yellow][sheet-log] Could not write Trigger_Zones: {exc}[/yellow]")
+def _event_payload(decision) -> dict:
+    first = decision.first
+    confirmation = decision.confirmation
+    return {
+        "decision": decision.status.value,
+        "reason": decision.reason,
+        "entry_exit_action": "NOTIFY" if decision.alert else "WAIT",
+        "winner": "CALL" if decision.status.value == "CONFIRMED_CALL" else (
+            "PUT" if decision.status.value == "CONFIRMED_PUT" else "NONE"
+        ),
+        "trade_grade": "CONFIRMED" if decision.alert else "NO_TRADE",
+        "confidence": "CONFIRMED" if decision.alert else "WAIT",
+        "user_commentary": decision.reason,
+        "first_expansion": vars(first) if first else None,
+        "confirmation_expansion": vars(confirmation) if confirmation else None,
+    }
 
 
-def _clean_watch_log(sheet_reader: GoogleSheetReader) -> None:
-    try:
-        sheet_reader.reset_watch_log()
-        console.print("[green]Watch_Log cleaned and rebuilt with proper headings.[/green]")
-    except Exception as exc:
-        console.print(f"[yellow][sheet-log] Could not clean Watch_Log: {exc}[/yellow]")
+def _write_state(output_dir: Path, payload: dict) -> None:
+    path = output_dir / "results" / "expansion_state.json"
+    serializable = json.loads(json.dumps(payload, default=str))
+    path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
 
 
-def _log_watch_commentary(
-    sheet_reader: GoogleSheetReader,
-    watch_result: WatchResult,
-    call_rows_count: int,
-    put_rows_count: int,
-) -> None:
-    """Write Watch_Log by explicit column names so values stay under the right headings."""
-    try:
-        sheet_reader.append_watch_log(
-            action=watch_result.action,
-            reason=watch_result.reason,
-            trigger_type=watch_result.trigger_type,
-            data_status=watch_result.data_status,
-            latest_call_price=watch_result.latest_call_price,
-            latest_put_price=watch_result.latest_put_price,
-            call_source=watch_result.call_source,
-            put_source=watch_result.put_source,
-            call_rows_count=call_rows_count,
-            put_rows_count=put_rows_count,
-        )
-    except Exception as exc:
-        console.print(f"[yellow][sheet-log] Could not write Watch_Log: {exc}[/yellow]")
-
-
-async def run_live(args: argparse.Namespace) -> None:
+async def run_live(once: bool = False) -> None:
     settings = load_settings()
-    if settings.strict_mode_enabled:
-        StrictModeScanner(settings.root_dir).print_report(block=settings.strict_mode_block)
-    settings.validate_for_live_run()
+    if not settings.llm_api_key or not settings.llm_model or not settings.tradingview_url:
+        raise RuntimeError("LLM_API_KEY/OPENAI_API_KEY, LLM_MODEL, and TRADINGVIEW_URL are required.")
 
-    db = Database(settings.database_path)
     client = LLMClient(settings.llm_provider, settings.llm_model, settings.llm_api_key)
-    trigger_creator = VisionTriggerCreator(client)
-    battle_analyzer = BattleAnalyzerV2(client)
-    sheet_reader = GoogleSheetReader(
-        settings.google_sheet_id,
-        settings.google_service_account_file,
-        settings.call_sheet_tab,
-        settings.put_sheet_tab,
-        settings.call_link_tab,
-        settings.put_link_tab,
-    )
     capture = ChartCapture(settings.output_dir)
-    alert_manager = AlertManager(settings.alert_mode, settings.telegram_bot_token, settings.telegram_chat_id, settings.email_alert_to)
-
-    session = TradingViewSession(settings.tradingview_url, settings.browser_profile_dir, headless=False)
-    page = await session.start()
-    try:
-        console.print("[green]TradingView opened. Log in manually if needed.[/green]")
-        _clean_watch_log(sheet_reader)
-        initial_screenshot = await capture.capture(page, prefix="initial")
-        console.print(f"Initial screenshot saved: {initial_screenshot}")
-
-        trigger_plan_model, raw = trigger_creator.create_trigger_plan(initial_screenshot)
-        trigger_plan = trigger_plan_model.model_dump()
-        db.save_raw_llm_response("trigger", raw, trigger_plan)
-        trigger_plan_id = db.save_trigger_plan(initial_screenshot, trigger_plan)
-        _log_trigger_zone(sheet_reader, trigger_plan, initial_screenshot, "INITIAL_LLM_BATTLE_ZONE")
-        watcher = TriggerWatcher(trigger_plan, max_age_seconds=max(120, settings.screenshot_interval_seconds * 10))
-        console.print("[green]LLM trigger plan saved and written to Google Sheet. Watch loop started.[/green]")
-
-        while True:
-            call_rows, put_rows = sheet_reader.read_recent(limit=80)
-            db.save_sheet_snapshot(call_rows, put_rows)
-            watch_result = watcher.check(call_rows, put_rows)
-            console.print(f"Watch action: {watch_result.action} | {watch_result.reason}")
-            _log_watch_commentary(sheet_reader, watch_result, len(call_rows), len(put_rows))
-
-            if watch_result.action == "START_BATTLE":
-                trigger_touch_response = {
-                    "battle_status": "TRIGGER_TOUCHED",
-                    "decision": "FIGHTING_STARTED",
-                    "battle_phase": "FIGHTING_STARTED",
-                    "user_commentary": "FIGHTING STARTED: price touched the LLM battle zone. Now LLM will check holding time, rejection, support break, volume imbalance, velocity after failure, and power transfer.",
-                    "entry_exit_action": "FIGHTING_STARTED",
-                    "trigger_type": watch_result.trigger_type,
-                    "winner": "NONE",
-                    "weak_side": "UNKNOWN",
-                    "strong_side": "UNKNOWN",
-                    "heavy_side": "UNKNOWN",
-                    "trade_grade": "WATCH_ONLY",
-                    "confidence": "WATCH",
-                    "reason": watch_result.reason,
-                    "next_action_for_python": "CALL_LLM_BATTLE_ANALYZER",
-                    "war_grading": {
-                        "overall_grade": "UNCLEAR",
-                        "trade_grade": "WATCH_ONLY",
-                        "grade_confidence": "WATCH",
-                        "grade_direction": "NONE",
-                        "battle_phase": "FIGHTING_STARTED",
-                        "missing_confirmations": ["Need LLM battle scan for rejection, support break, volume imbalance, velocity after failure"],
-                        "danger_signals": [],
-                        "factor_grades": [],
-                    },
-                }
-                try:
-                    sheet_reader.append_battle_log(trigger_touch_response, event_type="FIGHTING_STARTED", screenshot_path="", trigger_type=watch_result.trigger_type, cycle="", telegram_mode=settings.alert_mode)
-                except Exception as exc:
-                    console.print(f"[yellow][sheet-log] Could not write fighting start: {exc}[/yellow]")
-                alert_manager.send_battle_update(trigger_touch_response)
-
-                loop = BattleLoop(db, battle_analyzer, capture, sheet_reader, settings.battle_loop_seconds, alert_manager)
-                result = await loop.run(page, trigger_plan_id, trigger_plan, watch_result.trigger_type, max_cycles=args.max_battle_cycles)
-                console.print(f"LLM battle result: {result.get('decision')} | {result.get('battle_status')}")
-                if str(result.get("battle_status", "")).upper() in {"NEW_TRIGGER_REQUIRED", "INVALID"} or str(result.get("decision", "")).upper() == "NEW_TRIGGER_REQUIRED":
-                    new_screenshot = await capture.capture(page, prefix="new_trigger")
-                    trigger_plan_model, raw = trigger_creator.create_trigger_plan(new_screenshot)
-                    trigger_plan = trigger_plan_model.model_dump()
-                    db.save_raw_llm_response("trigger", raw, trigger_plan)
-                    trigger_plan_id = db.save_trigger_plan(new_screenshot, trigger_plan)
-                    _log_trigger_zone(sheet_reader, trigger_plan, new_screenshot, "NEW_LLM_BATTLE_ZONE")
-                    watcher.update_plan(trigger_plan)
-                else:
-                    await asyncio.sleep(settings.screenshot_interval_seconds)
-
-            elif watch_result.action == "NEW_TRIGGER_REQUIRED":
-                new_screenshot = await capture.capture(page, prefix="new_trigger")
-                trigger_plan_model, raw = trigger_creator.create_trigger_plan(new_screenshot)
-                trigger_plan = trigger_plan_model.model_dump()
-                db.save_raw_llm_response("trigger", raw, trigger_plan)
-                trigger_plan_id = db.save_trigger_plan(new_screenshot, trigger_plan)
-                _log_trigger_zone(sheet_reader, trigger_plan, new_screenshot, "NEW_LLM_BATTLE_ZONE")
-                watcher.update_plan(trigger_plan)
-                console.print("[green]New LLM trigger plan saved and written to Google Sheet.[/green]")
-            else:
-                await asyncio.sleep(settings.screenshot_interval_seconds)
-    finally:
-        await session.stop()
-
-
-async def test_screenshot() -> None:
-    settings = load_settings()
-    session = TradingViewSession(settings.tradingview_url, settings.browser_profile_dir, headless=False)
-    page = await session.start()
-    try:
-        path = await ChartCapture(settings.output_dir).capture(page, prefix="test")
-        console.print(f"Screenshot saved: {path}")
-    finally:
-        await session.stop()
-
-
-def test_sheets() -> None:
-    settings = load_settings()
-    reader = GoogleSheetReader(
-        settings.google_sheet_id,
-        settings.google_service_account_file,
-        settings.call_sheet_tab,
-        settings.put_sheet_tab,
-        settings.call_link_tab,
-        settings.put_link_tab,
+    alerts = AlertManager(
+        settings.alert_mode,
+        settings.telegram_bot_token,
+        settings.telegram_chat_id,
+        settings.email_alert_to,
     )
-    call_rows, put_rows = reader.read_recent(limit=5)
-    console.print("CALL rows:")
-    console.print(call_rows)
-    console.print("PUT rows:")
-    console.print(put_rows)
+    engine = OppositeExpansionEngine()
+    session = TradingViewSession(settings.tradingview_url, settings.browser_profile_dir, headless=False)
+    page = await session.start()
 
-
-def test_db() -> None:
-    settings = load_settings()
-    db = Database(settings.database_path)
-    console.print(f"Database ready: {db.path}")
-
-
-def test_alert() -> None:
-    settings = load_settings()
-    AlertManager(settings.alert_mode, settings.telegram_bot_token, settings.telegram_chat_id, settings.email_alert_to).send_battle_update({"decision": "TEST", "reason": "alert test"})
-
-
-def test_strict() -> None:
-    settings = load_settings()
-    StrictModeScanner(settings.root_dir).print_report(block=settings.strict_mode_block)
+    print("SPX opposite-expansion watcher started. Support/resistance logic is disabled.")
+    try:
+        while True:
+            screenshot = await capture.capture(page, prefix="expansion")
+            streams = extract_candles(client, screenshot)
+            decision = engine.process(streams, datetime.now().astimezone())
+            payload = _event_payload(decision)
+            _write_state(settings.output_dir, payload)
+            print(f"{decision.status.value}: {decision.reason}")
+            if decision.alert:
+                alerts.send_expansion_update(payload)
+            if once:
+                return
+            await asyncio.sleep(settings.screenshot_interval_seconds)
+    finally:
+        await session.stop()
 
 
 async def async_main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--test-sheets", action="store_true")
-    parser.add_argument("--test-db", action="store_true")
-    parser.add_argument("--test-alert", action="store_true")
-    parser.add_argument("--test-strict", action="store_true")
-    parser.add_argument("--test-screenshot", action="store_true")
-    parser.add_argument("--max-battle-cycles", type=int, default=4)
+    parser.add_argument("--once", action="store_true", help="Capture and evaluate one screenshot.")
     args = parser.parse_args()
-
-    if args.test_sheets:
-        test_sheets()
-    elif args.test_db:
-        test_db()
-    elif args.test_alert:
-        test_alert()
-    elif args.test_strict:
-        test_strict()
-    elif args.test_screenshot:
-        await test_screenshot()
-    else:
-        await run_live(args)
+    await run_live(once=args.once)
 
 
 if __name__ == "__main__":
