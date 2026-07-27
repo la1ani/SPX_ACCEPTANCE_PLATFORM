@@ -69,6 +69,23 @@ class AlertManager:
             return
         print(text)
 
+    def send_expansion_update(self, response: dict[str, Any]) -> None:
+        """Send the level-free CALL/PUT expansion confirmation."""
+        text = (
+            "SPX OPPOSITE-EXPANSION ALERT\n"
+            f"Decision: {response.get('decision', 'NO_TRADE')}\n"
+            f"Confirmed side: {response.get('winner', 'NONE')}\n"
+            f"Reason: {response.get('reason', '')}"
+        )
+        if self.mode == "none":
+            return
+        if self.mode == "telegram":
+            self._telegram(text)
+            return
+        if self.mode == "email":
+            print("[alert] Email mode selected, but SMTP settings are not implemented yet.")
+        print(text)
+
     def _telegram(self, text: str) -> None:
         if not self.telegram_bot_token or not self.telegram_chat_id:
             print("[alert] Telegram settings missing. Falling back to terminal.")
